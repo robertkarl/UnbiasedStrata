@@ -210,57 +210,6 @@ size_t utf8_complete_prefix(const std::string& s) {
     return s.size();
 }
 
-/// Splits the model's output into reasoning (inside the thinking tags) and the answer, as it streams.
-class ThinkSplitter {
-public:
-    ThinkSplitter(bool in_think, std::string end_tag) : in_think_(in_think), end_(std::move(end_tag)) {}
-
-    /// Feeds text; calls `emit(text, is_reasoning)` for what is certain so far.
-    void feed(const std::string& text, bool final, const std::function<void(const std::string&, bool)>& emit) {
-        buf_ += text;
-        for (;;) {
-            if (!in_think_) {
-                if (strip_ws_) {                                // the blank lines the template puts after the end tag
-                    size_t k = 0;
-                    while (k < buf_.size() && (buf_[k] == '\n' || buf_[k] == '\r')) ++k;
-                    buf_.erase(0, k);
-                    if (buf_.empty() && !final) return;
-                    strip_ws_ = false;
-                }
-                if (!buf_.empty()) emit(buf_, false);
-                buf_.clear();
-                return;
-            }
-            const size_t at = end_.empty() ? std::string::npos : buf_.find(end_);
-            if (at != std::string::npos) {
-                if (at > 0) emit(buf_.substr(0, at), true);
-                buf_.erase(0, at + end_.size());
-                in_think_ = false;
-                strip_ws_ = true;
-                continue;
-            }
-            // keep back a tail that could be the start of the end tag
-            size_t keep = 0;
-            if (!final && !end_.empty()) {
-                const size_t maxk = std::min(buf_.size(), end_.size() - 1);
-                for (size_t k = maxk; k > 0; --k)
-                    if (buf_.compare(buf_.size() - k, k, end_, 0, k) == 0) { keep = k; break; }
-            }
-            if (buf_.size() > keep) {
-                emit(buf_.substr(0, buf_.size() - keep), true);
-                buf_.erase(0, buf_.size() - keep);
-            }
-            return;
-        }
-    }
-
-private:
-    bool in_think_;
-    bool strip_ws_ = false;
-    std::string end_;
-    std::string buf_;
-};
-
 std::string make_id() {
     static std::mt19937_64 rng{std::random_device{}()};
     static std::mutex mu;
@@ -289,8 +238,7 @@ void json_error(httplib::Response& res, int status, const std::string& message, 
 struct Prepared {
     std::vector<llama_token> ids;
     std::string header;        // "GEN <max_new> key=value ... " - the ids follow
-    bool in_think = false;
-    std::string think_end = "</think>";
+    common_chat_parser_params parser;   // how to split the output into reasoning, answer and tool calls
     bool stream = false;
     long long max_new = 0;
 };
@@ -305,15 +253,17 @@ struct Server {
     /// Parses an OpenAI chat request, renders the model's chat template and tokenizes the result.
     bool prepare(const common_json& body, Prepared& p, std::string& err) {
         if (!body.is_object() || !body.contains("messages")) { err = "the request needs a \"messages\" array"; return false; }
-        if (body.contains("tools") && body.at("tools").is_array() && body.at("tools").size() > 0) {
-            err = "tool calling is not supported by this server yet";
-            return false;
-        }
         common_chat_templates_inputs in;
         in.messages = common_chat_msgs_parse_oaicompat(body.at("messages"));
+        if (body.contains("tools") && body.at("tools").is_array() && body.at("tools").size() > 0) {
+            in.tools = common_chat_tools_parse_oaicompat(body.at("tools"));
+            if (body.contains("tool_choice") && body.at("tool_choice").is_string())
+                in.tool_choice = common_chat_tool_choice_parse_oaicompat(body.at("tool_choice").get<std::string>());
+            in.parallel_tool_calls = body.value("parallel_tool_calls", false);
+        }
         in.add_generation_prompt = true;
         in.use_jinja = true;
-        in.reasoning_format = COMMON_REASONING_FORMAT_NONE;
+        in.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;   // reasoning goes to "reasoning_content"
         in.enable_thinking = true;
         // thinking: OpenAI's reasoning_effort, or the llama.cpp / vLLM convention chat_template_kwargs.enable_thinking
         if (body.contains("reasoning_effort") && body.at("reasoning_effort").is_string()) {
@@ -332,12 +282,10 @@ struct Server {
         p.ids = common_tokenize(vocab, cp.prompt, /*add_special=*/false, /*parse_special=*/true);
         if (p.ids.empty()) { err = "the prompt is empty"; return false; }
 
-        const std::string start_tag = cp.thinking_start_tag.empty() ? "<think>" : cp.thinking_start_tag;
-        if (!cp.thinking_end_tags.empty()) p.think_end = cp.thinking_end_tags.front();
-        while (!p.think_end.empty() && (p.think_end.back() == '\n' || p.think_end.back() == ' ')) p.think_end.pop_back();
-        const size_t s = cp.prompt.rfind(start_tag), e = cp.prompt.rfind(p.think_end);
-        const size_t a = cp.prompt.rfind("<|im_start|>");
-        p.in_think = s != std::string::npos && (a == std::string::npos || s > a) && (e == std::string::npos || e < s);
+        p.parser = common_chat_parser_params(cp);
+        p.parser.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
+        p.parser.parse_tool_calls = true;
+        if (!cp.parser.empty()) p.parser.parser.load(cp.parser);
 
         const long long n = (long long) p.ids.size();
         if (n + 1 > opt.ctx) {
@@ -408,28 +356,53 @@ struct Server {
         return t;
     }
 
-    /// Runs one request.  `emit(text, is_reasoning)` gets the text as it is produced and returns false when the
-    /// client has gone.
-    GenResult run(const Prepared& p, const std::function<bool(const std::string&, bool)>& emit) {
+    /// Runs one request.  The text produced so far is parsed by llama.cpp's chat parser after every token, and
+    /// `emit` gets what changed (reasoning, answer text, tool-call pieces); it returns false when the client has
+    /// gone.  `final_msg` is the whole parsed message.
+    GenResult run(const Prepared& p, common_chat_msg& final_msg,
+                  const std::function<bool(const std::vector<common_chat_msg_diff>&)>& emit) {
         std::lock_guard<std::mutex> lk(engine.mu);
-        ThinkSplitter split(p.in_think, p.think_end);
-        std::string pending;
+        std::string text, pending;
+        common_chat_msg msg;
+        std::vector<std::string> call_ids;
         bool client_ok = true;
-        auto out = [&](const std::string& text, bool reasoning) {
-            if (client_ok && !text.empty()) client_ok = emit(text, reasoning);
+        auto update = [&](bool partial) {
+            common_chat_msg now;
+            try {
+                now = common_chat_parse(text, partial, p.parser);
+            } catch (const std::exception&) {
+                if (partial) return;                            // not parseable yet: wait for more text
+                now = common_chat_msg();
+                now.role = "assistant";
+                now.content = text;
+            }
+            if (now.empty()) return;
+            now.set_tool_call_ids(call_ids, [] { return "call_" + make_id().substr(9); });
+            const std::vector<common_chat_msg_diff> diffs = common_chat_msg_diff::compute_diffs(msg, now);
+            msg = now;
+            if (client_ok && !diffs.empty()) client_ok = emit(diffs);
         };
         GenResult r = engine.generate(p.header, p.ids, [&](llama_token id) {
             if (llama_vocab_is_eog(vocab, id)) return client_ok;
             pending += common_token_to_piece(vocab, id, /*special=*/true);
             const size_t n = utf8_complete_prefix(pending);
             if (n > 0) {
-                split.feed(pending.substr(0, n), false, out);
+                text.append(pending, 0, n);
                 pending.erase(0, n);
+                update(true);
             }
             return client_ok;
         });
-        split.feed(pending, true, out);
+        text += pending;
+        update(false);
+        final_msg = msg;
+        if (final_msg.role.empty()) final_msg.role = "assistant";
         return r;
+    }
+
+    static const char* finish_reason(const GenResult& r, const common_chat_msg& msg) {
+        if (!msg.tool_calls.empty()) return "tool_calls";
+        return r.finish == "stop" ? "stop" : "length";
     }
 
     void handle_chat(const httplib::Request& req, httplib::Response& res) {
@@ -447,20 +420,13 @@ struct Server {
         const long long created = now_s();
 
         if (!prep->stream) {
-            std::string content, reasoning;
-            const GenResult r = run(*prep, [&](const std::string& text, bool is_reasoning) {
-                (is_reasoning ? reasoning : content) += text;
-                return true;
-            });
+            common_chat_msg msg;
+            const GenResult r = run(*prep, msg, [](const std::vector<common_chat_msg_diff>&) { return true; });
             if (!r.ok) return json_error(res, 500, r.error, "server_error");
-            common_json msg = common_json::object();
-            msg["role"] = "assistant";
-            msg["content"] = content;
-            if (!reasoning.empty()) msg["reasoning_content"] = reasoning;
             common_json choice = common_json::object();
             choice["index"] = 0;
-            choice["message"] = msg;
-            choice["finish_reason"] = r.finish == "stop" ? "stop" : "length";
+            choice["message"] = msg.to_json_oaicompat();
+            choice["finish_reason"] = finish_reason(r, msg);
             common_json out = common_json::object();
             out["id"] = id;
             out["object"] = "chat.completion";
@@ -497,15 +463,31 @@ struct Server {
             first["role"] = "assistant";
             first["content"] = "";
             bool ok = chunk(first, nullptr, nullptr);
-            const GenResult r = run(*prep, [&](const std::string& text, bool is_reasoning) {
-                common_json d = common_json::object();
-                d[is_reasoning ? "reasoning_content" : "content"] = text;
-                ok = ok && chunk(d, nullptr, nullptr);
+            common_chat_msg msg;
+            const GenResult r = run(*prep, msg, [&](const std::vector<common_chat_msg_diff>& diffs) {
+                for (const common_chat_msg_diff& df : diffs) {
+                    common_json d = common_json::object();
+                    if (!df.reasoning_content_delta.empty()) d["reasoning_content"] = df.reasoning_content_delta;
+                    if (!df.content_delta.empty()) d["content"] = df.content_delta;
+                    if (df.tool_call_index != std::string::npos) {
+                        common_json fn = common_json::object();
+                        if (!df.tool_call_delta.name.empty()) fn["name"] = df.tool_call_delta.name;
+                        fn["arguments"] = df.tool_call_delta.arguments;
+                        common_json tc = common_json::object();
+                        tc["index"] = (long long) df.tool_call_index;
+                        if (!df.tool_call_delta.id.empty()) { tc["id"] = df.tool_call_delta.id; tc["type"] = "function"; }
+                        tc["function"] = fn;
+                        d["tool_calls"] = common_json::array();
+                        d["tool_calls"].push_back(tc);
+                    }
+                    if (d.size() == 0) continue;
+                    ok = ok && chunk(d, nullptr, nullptr);
+                }
                 return ok;
             });
             if (ok) {
                 if (r.ok) {
-                    chunk(common_json::object(), r.finish == "stop" ? "stop" : "length", &r);
+                    chunk(common_json::object(), finish_reason(r, msg), &r);
                 } else {
                     common_json e = common_json::object();
                     e["error"] = common_json::object();
