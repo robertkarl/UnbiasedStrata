@@ -987,20 +987,14 @@ if(STRATA_NATIVE_EXPERTS)
   else()
     set(GGML_NATIVE ON CACHE BOOL "" FORCE)
   endif()
-  if(STRATA_GGML_DIR)
-    add_subdirectory(${STRATA_GGML_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
-  else()
-    include(FetchContent)
-    FetchContent_Declare(strata_llamacpp
-      GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
-      GIT_TAG 3cf03257f219afbe7334045ff7c6a06ac68c627d
-      GIT_SHALLOW FALSE)
-    FetchContent_GetProperties(strata_llamacpp)
-    if(NOT strata_llamacpp_POPULATED)
-      FetchContent_Populate(strata_llamacpp)
-    endif()
-    add_subdirectory(${strata_llamacpp_SOURCE_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
+  # UnbiasedStrata: ggml comes from the pinned llama.cpp submodule (third_party/llama.cpp); the build fetches nothing
+  if(NOT STRATA_GGML_DIR)
+    set(STRATA_GGML_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp)
   endif()
+  if(NOT EXISTS ${STRATA_GGML_DIR}/ggml/CMakeLists.txt)
+    message(FATAL_ERROR "ggml was not found in ${STRATA_GGML_DIR}: run `git submodule update --init` first")
+  endif()
+  add_subdirectory(${STRATA_GGML_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
   # part of strata_kernels_cpu (the pool calls these and they call its CPU probe: one library, so GNU ld's
   # one-pass static linking has no cycle to resolve)
   target_sources(strata_kernels_cpu PRIVATE src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp
