@@ -12,8 +12,8 @@ build:
 	  { echo "third_party/llama.cpp is empty: run 'git submodule update --init' first"; exit 1; }
 	cmake -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=ON -DSTRATA_NATIVE_EXPERTS=ON \
 	      -DSTRATA_PORTABLE=ON -DSTRATA_BUILD_TESTS=OFF "-DCMAKE_CUDA_ARCHITECTURES=$(CUDA_ARCHS)"
-	cmake --build $(BUILD_DIR) -j $(JOBS) --target strata
-	@echo "built: $(BUILD_DIR)/strata"
+	cmake --build $(BUILD_DIR) -j $(JOBS) --target unbiased-strata
+	@echo "built: $(BUILD_DIR)/unbiased-strata"
 
 clean:
 	rm -rf $(BUILD_DIR)
