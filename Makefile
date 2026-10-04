@@ -2,7 +2,8 @@
 BUILD_DIR  ?= build
 # RTX 30 (86), RTX 40 (89) and RTX 50 (120) in one binary.  sm_120 needs CUDA 12.8+, and upstream recommends 13.0+.
 CUDA_ARCHS ?= 86;89;120
-JOBS       ?= $(shell nproc 2>/dev/null || echo 4)
+# capped: inside a container nproc reports the host's CPUs, not the container's quota
+JOBS       ?= $(shell n=$$(nproc 2>/dev/null || echo 4); [ $$n -gt 16 ] && n=16; echo $$n)
 
 .PHONY: build clean
 
