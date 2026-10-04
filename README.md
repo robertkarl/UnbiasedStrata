@@ -7,22 +7,32 @@ build, copy one binary, run. Nothing is downloaded during the build or at start-
 
 ## Status
 
-Work in progress. What works today, checked on an RTX 3090 pod:
+Work in progress. What works today, checked on RTX 3090 pods:
 
 - Clone, `git submodule update --init`, `make build`, with no network access during the build.
-- One binary, `build/unbiased-strata`, that loads the model and serves an OpenAI-style chat API. It answered
-  streaming and non-streaming requests correctly, with the model's reasoning separated from its answer and
-  draft tokens being accepted.
+- One binary, `build/unbiased-strata`, that loads the model and serves an OpenAI-style chat API: streaming
+  and non-streaming replies, the model's reasoning separated from its answer, and tool calls.
+- A coding agent (pi) completed a multi-step task against it: it wrote a program, ran it through its tools
+  and reported the result.
 
 Not done yet:
 
-- **No speed is claimed.** The only end-to-end run so far was on a pod whose network volume could not be
-  read normally by the engine, so it ran in a slow fallback mode. A run on a machine with a local disk is
-  still to do.
+- **No speed is claimed.** The only end-to-end runs so far were on a pod whose network volume the engine
+  could not load experts from in its normal way (see Known problems), so it ran in a fallback mode. In that
+  mode it generated at 21 to 61 tokens per second. A run in the normal mode on a machine with a local disk
+  is still to do.
 - The prepared model files (below) are not published yet.
-- The engine source is still upstream's in full. Cutting it down to what this one configuration needs is
-  the next piece of work.
-- Tool calling and image input are not supported.
+- The engine source is still upstream's in full. 85 of its 272 source files are not compiled into the binary
+  at all; removing those, and then the multi-GPU, AMD, Windows and other-model code, is the next piece of work.
+- Image input is not supported.
+
+## Known problems
+
+- **RunPod network volumes.** With the model on a RunPod network volume (`/workspace`), the engine fails at
+  start with "short read or unreadable shard": once it has pinned its expert arena, reads from the volume
+  return "cannot allocate memory". The cause is not known. Keeping the model on local disk avoids it. On a
+  pod without enough local disk, a working fallback was shard 1 in `/dev/shm`, shard 2 on local disk, and
+  `-- --mmap-experts` at the end of the command line.
 
 ## What it supports
 
@@ -40,7 +50,7 @@ Tested so far:
 
 | Machine | What was checked |
 | --- | --- |
-| RTX 3090 pod, CUDA 12.8, g++ 13.3 | `git submodule update --init` and `make build` complete with network access blocked for the build (144 s); the binary starts. The model has not been run. |
+| RTX 3090 pods, CUDA 12.8, g++ 13.3 | `git submodule update --init` and `make build` complete with network access blocked for the build. The model loads and answers chat requests, in the fallback mode described under Known problems. |
 
 ## Build
 
@@ -69,7 +79,7 @@ It listens on `127.0.0.1:8080` and serves `POST /v1/chat/completions` (with stre
 `--port`. Inside a container set `--threads` yourself: the default is every physical core of the host.
 
 Requests are greedy unless they set a `temperature` above zero. The model thinks before it answers; send
-`"reasoning_effort": "none"` to turn that off.
+`"reasoning_effort": "none"` to turn that off. Tool calling follows the OpenAI format (`tools`, `tool_calls`).
 
 ## Model files
 
