@@ -7,17 +7,22 @@ build, copy one binary, run. Nothing is downloaded during the build or at start-
 
 ## Status
 
-Work in progress. What exists today:
+Work in progress. What works today, checked on an RTX 3090 pod:
 
-- The upstream engine, building from a pinned llama.cpp submodule with no network access.
-- `make build`.
+- Clone, `git submodule update --init`, `make build`, with no network access during the build.
+- One binary, `build/unbiased-strata`, that loads the model and serves an OpenAI-style chat API. It answered
+  streaming and non-streaming requests correctly, with the model's reasoning separated from its answer and
+  draft tokens being accepted.
 
 Not done yet:
 
-- The C++ front end (tokenizer, chat template, HTTP API). Upstream does these in Python, which this fork
-  removed. Until it exists, the binary is upstream's engine and takes token ids, not text.
-- Published model files (see below).
-- Any benchmark of this fork. No speed is claimed.
+- **No speed is claimed.** The only end-to-end run so far was on a pod whose network volume could not be
+  read normally by the engine, so it ran in a slow fallback mode. A run on a machine with a local disk is
+  still to do.
+- The prepared model files (below) are not published yet.
+- The engine source is still upstream's in full. Cutting it down to what this one configuration needs is
+  the next piece of work.
+- Tool calling and image input are not supported.
 
 ## What it supports
 
@@ -49,16 +54,33 @@ git submodule update --init
 make build
 ```
 
-The result is `build/strata`. It links the CUDA runtime libraries dynamically, as llama.cpp does.
+The result is `build/unbiased-strata`, a single file you can copy to another machine. It needs the NVIDIA
+driver and the CUDA runtime libraries there, as llama.cpp does.
+
+## Run
+
+```
+./unbiased-strata --model /models/Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS-00001-of-00002.gguf \
+                  --pack /models/pack-iq3-xxs --mtp /models/mtp
+```
+
+It listens on `127.0.0.1:8080` and serves `POST /v1/chat/completions` (with streaming), `GET /v1/models` and
+`GET /health`. Loading takes a few minutes. Options: `--ctx N` (default 32768), `--threads N`, `--host`,
+`--port`. Inside a container set `--threads` yourself: the default is every physical core of the host.
+
+Requests are greedy unless they set a `temperature` above zero. The model thinks before it answers; send
+`"reasoning_effort": "none"` to turn that off.
 
 ## Model files
 
 The engine needs three things on disk before it starts. It never fetches them.
 
 1. The two IQ3_XXS GGUF shards from
-   [ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF).
-2. The prepared "pack" for those shards.
-3. The prepared draft head.
+   [ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF](https://huggingface.co/ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF),
+   side by side in one directory.
+2. The prepared "pack" for those shards (about 1.5 GB): `index.txt`, `dense.bin`, `native_experts.txt`,
+   `conversions.json`, `expert-profile.bin`.
+3. The prepared draft head (about 0.8 GB): `experts.bin`, `dense.bin`, `dense.txt`, `draft_vocab.bin`.
 
 Items 2 and 3 are made once with upstream Strata's tools and will be published; see [UPSTREAM.md](UPSTREAM.md).
 

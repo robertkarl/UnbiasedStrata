@@ -548,7 +548,19 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--port") o.port = std::atoi(next("--port").c_str());
         else if (a == "--ctx") o.ctx = std::atoll(next("--ctx").c_str());
         else if (a == "--threads") o.threads = std::atoi(next("--threads").c_str());
-        else if (a == "--") { for (++i; i < argc; ++i) o.extra.push_back(argv[i]); }
+        else if (a == "--") {
+            for (++i; i < argc; ++i) {
+                const std::string e = argv[i];
+                // one GPU only: the engine's multi-GPU and remote-expert modes are not part of this fork
+                for (const char* no : {"--gpus", "--layer-split", "--split-device", "--peer-device", "--peer-slots",
+                                       "--remote-expert", "--vision", "--batch"})
+                    if (e.rfind(no, 0) == 0) {
+                        std::fprintf(stderr, "unbiased-strata: %s is not supported (single GPU, text only)\n", e.c_str());
+                        std::exit(2);
+                    }
+                o.extra.push_back(e);
+            }
+        }
         else if (a == "-h" || a == "--help") return false;
         else { std::fprintf(stderr, "unbiased-strata: unknown option %s\n\n", a.c_str()); return false; }
     }
