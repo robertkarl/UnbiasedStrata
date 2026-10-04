@@ -31,7 +31,11 @@ One configuration, on purpose:
 | CPU | x86-64 with AVX2 |
 | OS | Linux |
 
-Tested hardware will be listed here as it is run. Nothing has been tested yet.
+Tested so far:
+
+| Machine | What was checked |
+| --- | --- |
+| RTX 3090 pod, CUDA 12.8, g++ 13.3 | `git submodule update --init` and `make build` complete with network access blocked for the build (144 s); the binary starts. The model has not been run. |
 
 ## Build
 
