@@ -95,7 +95,7 @@ find_package(Threads REQUIRED)
 target_link_libraries(strata_kernels_cpu PUBLIC strata_includes Threads::Threads)
 
 option(STRATA_NATIVE_EXPERTS "Native (IQ) expert support through ggml-cpu" ON)
-set(STRATA_GGML_DIR "" CACHE PATH "llama.cpp checkout to take ggml from (empty: fetch the pinned commit)")
+set(STRATA_GGML_DIR "" CACHE PATH "llama.cpp checkout to take ggml from (empty: the third_party/llama.cpp submodule)")
 if(STRATA_NATIVE_EXPERTS)
   set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
   set(GGML_STATIC ON CACHE BOOL "" FORCE)
@@ -106,20 +106,14 @@ if(STRATA_NATIVE_EXPERTS)
   set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
   set(GGML_NATIVE ON CACHE BOOL "" FORCE)
-  if(STRATA_GGML_DIR)
-    add_subdirectory(${STRATA_GGML_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
-  else()
-    include(FetchContent)
-    FetchContent_Declare(strata_llamacpp
-      GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
-      GIT_TAG 3cf03257f219afbe7334045ff7c6a06ac68c627d
-      GIT_SHALLOW FALSE)
-    FetchContent_GetProperties(strata_llamacpp)
-    if(NOT strata_llamacpp_POPULATED)
-      FetchContent_Populate(strata_llamacpp)
-    endif()
-    add_subdirectory(${strata_llamacpp_SOURCE_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
+  # UnbiasedStrata: ggml comes from the pinned llama.cpp submodule (third_party/llama.cpp); the build fetches nothing
+  if(NOT STRATA_GGML_DIR)
+    set(STRATA_GGML_DIR ${STRATA_ROOT}/third_party/llama.cpp)
   endif()
+  if(NOT EXISTS ${STRATA_GGML_DIR}/ggml/CMakeLists.txt)
+    message(FATAL_ERROR "ggml was not found in ${STRATA_GGML_DIR}: run `git submodule update --init` first")
+  endif()
+  add_subdirectory(${STRATA_GGML_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
   strata_resolve(_cpu_native src/kernels/cpu/native_expert.cpp src/kernels/cpu/iq_avx512.cpp src/kernels/cpu/iq_avx2.cpp
                              src/kernels/cpu/kq_avx2.cpp)   # 0.1.31: the Q4_K/Q5_K/Q5_1/Q8_0 expert rows
   target_sources(strata_kernels_cpu PRIVATE ${_cpu_native})
@@ -238,4 +232,26 @@ if(STRATA_SYCL_PARITY)
     target_include_directories(native_expert_parity PRIVATE ${STRATA_ROOT}/third_party/ggml)
     target_link_libraries(native_expert_parity PRIVATE strata_kernels strata_kernels_cpu)
   endif()
+endif()
+
+# ---- UnbiasedStrata: one binary = the SYCL engine above plus the C++ front end (frontend/) -----------------------
+# The same front end as the CUDA build (../CMakeLists.txt); only the engine it is linked with differs.  llama.cpp is
+# configured without this directory's -fsycl compile options: the tokenizer, chat template and HTTP code are host
+# code, and compiling them for the device too only costs time.  The link keeps -fsycl (the engine needs it).
+if(STRATA_NATIVE_EXPERTS)
+  set(LLAMA_BUILD_COMMON ON CACHE BOOL "" FORCE)
+  foreach(_o LLAMA_BUILD_TESTS LLAMA_BUILD_TOOLS LLAMA_BUILD_EXAMPLES LLAMA_BUILD_SERVER LLAMA_BUILD_APP
+             LLAMA_BUILD_UI LLAMA_USE_PREBUILT_UI LLAMA_OPENSSL LLAMA_LLGUIDANCE LLAMA_ALL_WARNINGS)
+    set(${_o} OFF CACHE BOOL "" FORCE)
+  endforeach()
+  get_directory_property(_strata_copts COMPILE_OPTIONS)
+  set_directory_properties(PROPERTIES COMPILE_OPTIONS "")
+  add_subdirectory(${STRATA_GGML_DIR} ${CMAKE_BINARY_DIR}/llama.cpp EXCLUDE_FROM_ALL)
+  set_directory_properties(PROPERTIES COMPILE_OPTIONS "${_strata_copts}")
+  add_executable(unbiased-strata ${STRATA_ROOT}/frontend/main.cpp ${STRATA_ROOT}/frontend/engine_entry_sycl.cpp)
+  target_compile_definitions(unbiased-strata PRIVATE UNBIASED_STRATA_SYCL=1)
+  set_target_properties(unbiased-strata PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})   # build-sycl/unbiased-strata
+  target_include_directories(unbiased-strata PRIVATE ${STRATA_GGML_DIR}/vendor)
+  target_link_libraries(unbiased-strata PRIVATE strata_engine strata_prefill strata_spec llama-common llama cpp-httplib
+                        Threads::Threads)
 endif()
