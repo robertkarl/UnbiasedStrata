@@ -12070,6 +12070,9 @@ int main(int argc, char** argv) {
             if (secondary_refills)
                 std::fprintf(stderr,"strata secondary refill payload: H2D=%llu D2D=%llu (cumulative)\n",
                     (unsigned long long)secondary_h2d_bytes,(unsigned long long)secondary_d2d_bytes);
+            if (ver.dense_t8_enabled())
+                std::fprintf(stderr,"strata dense T8 MMQ: %llu actual verification windows (cumulative graph launches, not committed tokens)\n",
+                             (unsigned long long)ver.dense_t8_windows());
             if (sfx_windows > 0)
                 std::fprintf(stderr, "strata serve: suffix drafts: %lld windows, %lld of %lld drafts accepted\n",
                              (long long) sfx_windows, (long long) sfx_ok, (long long) sfx_drafts);

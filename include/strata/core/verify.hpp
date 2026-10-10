@@ -39,6 +39,8 @@
 #include <string>
 #include <vector>
 
+namespace strata::prefill { class DenseQ8T8; }
+
 namespace strata::core {
 
 class NativeHead;
@@ -276,6 +278,8 @@ public:
     const uint8_t* cached_refill_source(int64_t layer,int64_t expert) const { return miss_cache_snapshot_.find(layer,expert); }
     bool miss_cache_snapshot_enabled() const { return miss_cache_snapshot_.enabled(); }
     bool device_plan_enabled() const { return device_plan_; }
+    bool dense_t8_enabled() const { return dense_t8_mmq_ != nullptr; }
+    uint64_t dense_t8_windows() const { return dense_t8_windows_; }
 
 private:
     RemoteExpertOpt* remote_opt_ = nullptr;
@@ -324,6 +328,9 @@ private:
     void collect_profile();   ///< STRATA_VERIFY_PROFILE: add the last window's stamps to prof_sum_
     void accumulate_profile(const unsigned long long* stamps);   ///< one window's stamps (host copy) into prof_sum_
     // pipelined windows (pl_launch ...)
+    strata::prefill::DenseQ8T8* dense_t8_mmq_ = nullptr;
+    bool dense_t8_graph_ = false;
+    uint64_t dense_t8_windows_ = 0;
     cudaStream_t ext_stream_ = nullptr;   ///< set_stream: the stage's shared stream (not destroyed here)
     bool always_publish_ = false;
     void pl_stage(int T, const int32_t* tokens, int64_t pos0, const int32_t ple_prev[2]);
