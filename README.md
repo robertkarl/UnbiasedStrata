@@ -1,13 +1,14 @@
 # UnbiasedStrata
 
 A cut-down fork of [Strata](https://github.com/Niko1221/Strata), an inference engine for the
-Qwen3.8-Flash-Next model. The engine source is unchanged from upstream. Everything around it has been
+Qwen3.8-Flash-Next model. The engine is updated to upstream 0.1.42 with additional engine performance/correctness ports; see [upgrade scope and validation](docs/UPGRADE.md). Everything around it has been
 removed or is being replaced, so that building and running work the way they do for llama.cpp: clone,
 build, copy one binary, run. Nothing is downloaded during the build or at start-up.
 
 ## Status
 
-Work in progress. What works today, checked on RTX 3090 pods:
+Work in progress. The frontend/model workflow below was checked on RTX 3090 pods before this upgrade.
+The current native upgrade build and fixture results are in [UPGRADE_VALIDATION.md](docs/UPGRADE_VALIDATION.md).
 
 - Clone, `git submodule update --init`, `make build`, with no network access during the build.
 - One binary, `build/unbiased-strata`, that loads the model and serves an OpenAI-style chat API: streaming
@@ -22,8 +23,8 @@ Not done yet:
   mode it generated at 21 to 61 tokens per second. A run in the normal mode on a machine with a local disk
   is still to do.
 - The prepared model files (below) are not published yet.
-- The engine source is still upstream's in full. 85 of its 272 source files are not compiled into the binary
-  at all; removing those, and then the multi-GPU, AMD, Windows and other-model code, is the next piece of work.
+- The engine source remains broadly imported, with the additional ports recorded separately. Removing unused
+  source, and then the multi-GPU, AMD, Windows and other-model code, remains future work.
 - Image input is not supported.
 
 ## Known problems
