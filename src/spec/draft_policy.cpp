@@ -18,6 +18,9 @@ constexpr double kDecay = 0.97;       // lookup counts: older windows fade
 constexpr double kPriorQ[DraftPolicy::kBuckets] = {0.75, 0.88, 0.93, 0.96};
 constexpr double kPriorN = 4.0;
 constexpr int kProbes = 3;       // a lookup window size is tried this often before its guessed cost can veto it
+// A size not measured for this many rounds is tried again when a confident lookup could use it: its cost was set in
+// one stretch (a prompt's cache refill, say) and, priced high, it would never be measured again (#1252)
+constexpr double kStaleRounds = 300.0;
 
 }  // namespace
 
@@ -47,6 +50,8 @@ double DraftPolicy::cost_ms(int t) const {
     return den > 0 ? num / den : kShape[t];
 }
 
+bool DraftPolicy::stale(int t) const { return cost_n_[t] > 0 && rounds_ - last_[t] > kStaleRounds; }
+
 double DraftPolicy::mtp_tokens(int t) const {
     if (mtp_n_[t] > 0) return mtp_tok_[t];
     return 1.0 + 0.7 * (t - 1);       // before any MTP window of this size: a typical acceptance
@@ -66,15 +71,17 @@ DraftPolicy::Pick DraftPolicy::choose(int t_mtp, int lookup_k, int match) const 
         const double r = e / cost_ms(k + 1);
         if (r > best) { best = r; best_t = k + 1; }
     }
+    const int t_full = std::min(lookup_k, max_t_ - 1) + 1;
     if (best_t > 0 && best > base * (1.0 + margin_)) {
         p.lookup = true;
         p.t = best_t;
+        // a wider size whose cost has gone stale is re-measured, so one slow stretch cannot price it out for good
+        if (best_t < t_full && q >= 0.85 && stale(t_full)) p.t = t_full;
         return p;
     }
     // a guessed cost can keep the policy from ever measuring a size: the first few times a confident lookup would
     // need a size not measured yet, it is tried (verification keeps the output; only the one round's speed is at stake)
-    const int t_full = std::min(lookup_k, max_t_ - 1) + 1;
-    if (t_full > p.t && cost_n_[t_full] < kProbes && q >= 0.85) {
+    if (t_full > p.t && (cost_n_[t_full] < kProbes || stale(t_full)) && q >= 0.85) {
         p.lookup = true;
         p.t = t_full;
     }
@@ -86,7 +93,9 @@ void DraftPolicy::observe(bool lookup, int t, int accepted, int match, double ro
     if (round_ms > 0) {
         cost_[t] = cost_n_[t] > 0 ? (1.0 - kCostAlpha) * cost_[t] + kCostAlpha * round_ms : round_ms;
         cost_n_[t] += 1.0;
+        last_[t] = rounds_;
     }
+    rounds_ += 1.0;
     if (lookup) {
         const int b = bucket(match);
         ok_[b] = kDecay * ok_[b] + accepted;
@@ -96,6 +105,57 @@ void DraftPolicy::observe(bool lookup, int t, int accepted, int match, double ro
         mtp_tok_[t] = mtp_n_[t] > 0 ? (1.0 - kTokAlpha) * mtp_tok_[t] + kTokAlpha * got : got;
         mtp_n_[t] += 1.0;
     }
+}
+
+double DraftPolicy::chain_rate(int match) const {
+    // prior: a chained draft is a lookup continuing the MTP's drafts - weaker evidence than a plain match of that length
+    constexpr double kChainPrior[kBuckets] = {0.45, 0.65, 0.8, 0.9};
+    const int b = bucket(match);
+    return (cok_[b] + kPriorN * kChainPrior[b]) / (cok_[b] + cbad_[b] + kPriorN);
+}
+
+int DraftPolicy::chain(int t_mtp, double p_mtp, int k_avail, int match) const {
+    t_mtp = std::clamp(t_mtp, 1, max_t_);
+    const int kmax = std::min(k_avail, max_t_ - t_mtp);
+    if (kmax <= 0) return 0;
+    const double e0 = mtp_tokens(t_mtp), base = e0 / cost_ms(t_mtp), c = chain_rate(match);
+    p_mtp = std::clamp(p_mtp, 0.0, 1.0);
+    double gain = 0.0, ci = 1.0, best = 0.0;
+    int best_k = 0;
+    for (int k = 1; k <= kmax; ++k) {
+        ci *= c;
+        gain += ci;
+        const double r = (e0 + p_mtp * gain) / cost_ms(t_mtp + k);
+        if (r > best) { best = r; best_k = k; }
+    }
+    const int t_full = t_mtp + kmax;
+    if (best_k > 0 && best > base * (1.0 + margin_)) {
+        // As choose(): a profitable shorter chain must not keep a stale full size from being measured again.
+        if (best_k < kmax && p_mtp * c >= 0.6 && stale(t_full)) return kmax;
+        return best_k;
+    }
+    // as choose(): a size whose cost is only guessed is tried a few times when the continuation looks likely
+    if ((cost_n_[t_full] < kProbes || stale(t_full)) && p_mtp * c >= 0.6) return kmax;
+    return 0;
+}
+
+void DraftPolicy::observe_chain(int t_mtp, int k, int accepted, int match, double round_ms) {
+    const int t = std::clamp(t_mtp + k, 1, kMaxT);
+    if (round_ms > 0) {
+        cost_[t] = cost_n_[t] > 0 ? (1.0 - kCostAlpha) * cost_[t] + kCostAlpha * round_ms : round_ms;
+        cost_n_[t] += 1.0;
+        last_[t] = rounds_;
+    }
+    rounds_ += 1.0;
+    // the MTP part is an ordinary MTP window as far as its own drafts go
+    const int mtp_acc = std::min(accepted, t_mtp - 1);
+    const double got = mtp_acc + 1.0;
+    mtp_tok_[t_mtp] = mtp_n_[t_mtp] > 0 ? (1.0 - kTokAlpha) * mtp_tok_[t_mtp] + kTokAlpha * got : got;
+    mtp_n_[t_mtp] += 1.0;
+    if (accepted < t_mtp - 1) return;   // the chain was never reached: it says nothing about the lookup
+    const int b = bucket(match), ok = accepted - (t_mtp - 1);
+    cok_[b] = kDecay * cok_[b] + ok;
+    cbad_[b] = kDecay * cbad_[b] + (ok < k ? 1.0 : 0.0);
 }
 
 }  // namespace strata::spec

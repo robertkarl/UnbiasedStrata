@@ -8,10 +8,11 @@ endif()
 # maintainers; gfx1101 (RX 7800 XT, #254) and gfx1200 (RX 9060 XT, #256) by their owners. gfx1102 (RX 7600) has the
 # same LDS limit and dot4 instruction and passed ctest (#192), but no model run has been reported yet. RDNA2 gfx1030 (RX 6800 / 6900) has the
 # same LDS limit and wave32 but an older dot4 instruction (v_dot4_i32_i8, hip_compat/intrinsics.hpp); a community
-# report ran it (#311), the maintainers have not.
+# report ran it (#311), the maintainers have not. gfx1151 (Ryzen AI Max / Strix Halo, Radeon 8060S, RDNA3.5) is the
+# same wave32 / 64 KiB LDS / sudot4 family as gfx1100, on a unified-memory APU; experimental.
 set(_strata_hip_validated gfx1100 gfx1201)
 set(_strata_hip_community gfx1101 gfx1200)
-set(_strata_hip_unvalidated gfx1012 gfx1102 gfx1030 gfx1031)
+set(_strata_hip_unvalidated gfx1010 gfx1011 gfx1012 gfx1102 gfx1103 gfx1030 gfx1031 gfx1034 gfx1150 gfx1151 gfx1152)   # gfx1103: Radeon 780M iGPU, opt-in, portable kernels (no WMMA); gfx1152: Krackan, Radeon 860M / 840M (#1625), builds with the portable kernels, no card report yet
 # CMake hands HIP a ';' list, but a -DCMAKE_HIP_ARCHITECTURES typed by hand (or ROCm's own Windows tooling) may use
 # spaces, which foreach(IN LISTS) would otherwise treat as one element.
 string(REPLACE " " ";" _strata_hip_norm "${CMAKE_HIP_ARCHITECTURES}")
@@ -42,6 +43,18 @@ endif()
 string(REPLACE ";" "," STRATA_HIP_ARCHS "${STRATA_HIP_ARCH_LIST}")
 
 enable_language(HIP)
+# CMake caches CMAKE_HIP_FLAGS_<CONFIG> while it enables HIP, before it tests the compiler.  A configure that stopped
+# there because HIP could not compile at all (Visual Studio 2026's <cmath> with the HIP SDK 7.2, a wrong ROCm path)
+# cached them empty, and every later configure of that build folder keeps them: setup's Release build then compiled
+# all kernels at -O0 (an RX 6800 decoded at 0.24-0.27 tok/s instead of 28).  Empty ones get what CMake gives a fresh
+# build folder.
+foreach(_cfg IN ITEMS DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
+  string(STRIP "${CMAKE_HIP_FLAGS_${_cfg}_INIT}" _strata_init)
+  if("${CMAKE_HIP_FLAGS_${_cfg}}" STREQUAL "" AND NOT "${_strata_init}" STREQUAL "")
+    set(CMAKE_HIP_FLAGS_${_cfg} "${_strata_init}" CACHE STRING
+        "Flags used by the HIP compiler during ${_cfg} builds." FORCE)
+  endif()
+endforeach()
 find_package(hip CONFIG REQUIRED)
 find_package(hipblas CONFIG REQUIRED)
 # Older distro hipBLAS has no workspace API. The compatibility shim uses
@@ -77,6 +90,11 @@ target_compile_definitions(strata_hip_runtime INTERFACE STRATA_USE_HIP=1 "STRATA
 option(STRATA_GFX1012_PORTABLE_DOT "Use the portable signed-byte dot control on gfx1012" OFF)
 if(STRATA_GFX1012_PORTABLE_DOT)
   target_compile_definitions(strata_hip_runtime INTERFACE STRATA_GFX1012_PORTABLE_DOT=1)
+endif()
+# #313: the RDNA3 WMMA GEMM's intrinsics only compile for gfx11 targets and the host pass does not define
+# __gfx11xx__, so the build supplies the macro for gfx11 configs (the kernels also gate on the device at runtime)
+if(CMAKE_HIP_ARCHITECTURES MATCHES "gfx11")
+  target_compile_definitions(strata_hip_runtime INTERFACE STRATA_WMMA_GFX11=1)
 endif()
 target_link_libraries(strata_hip_runtime INTERFACE hip::host)
 # The shim renames the CUDA runtime to HIP, force-included into every host and device source. On Windows the host

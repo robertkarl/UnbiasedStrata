@@ -4,7 +4,7 @@
 
 | What | Where | Version |
 | --- | --- | --- |
-| Engine | https://github.com/Niko1221/Strata | commit `6f32ec070f23ced9f50e704d854d775da52591ab`, engine 0.1.39 |
+| Engine | https://github.com/Niko1221/Strata | commit `61b3fb5dd3f1e8ec09cf7e4e05208bc6d3c46406`, engine 0.1.42, plus the engine ports listed in [UPGRADE.md](docs/UPGRADE.md) |
 | ggml (CPU backend, CUDA matrix kernels) | https://github.com/ggml-org/llama.cpp, as the submodule `third_party/llama.cpp` | commit `3cf03257f219afbe7334045ff7c6a06ac68c627d`, the one upstream Strata pins |
 
 The first commit of this repository is the upstream snapshot as published. One file was not imported:
@@ -15,21 +15,22 @@ The first commit of this repository is the upstream snapshot as published. One f
 
 - **Build:** ggml is taken from the submodule. Upstream cloned llama.cpp during the build.
 - **Removed:** the Python installer and launchers, the Python server and web app, the Python tools, the
-  Intel SYCL port, Docker files, benchmark results, the test suite, translations, and all docs except
+  Intel SYCL port, Docker files, benchmark results, translations, and all docs except
   `docs/upstream/DETAILS.md` and the paper.
+- **Review helpers:** focused native tests and optional standalone measurement helpers were restored for the engine upgrade. They are not part of the HTTP frontend or normal startup.
 - **Added:** `frontend/`, the C++ front end (tokenizer, chat template, output parser and HTTP API, using
   llama.cpp's code from the submodule), and a build target that links it with the engine into one binary.
-- **Engine source (`src/`, `include/`):** unchanged so far. The engine's own program is compiled into the
+- **Engine source (`src/`, `include/`):** upgraded from 0.1.39 to upstream 0.1.42, with the separately recorded performance/correctness ports in `docs/UPGRADE.md`. The engine's own program is compiled into the
   binary with its entry point renamed; the front end starts it as a child process.
 
 Code paths for other models, AMD cards and Windows are still present in the engine source. They are not
-built by `make build`, not tested and not supported here. They are left in place so the engine stays
-identical to upstream and can be updated by re-importing it.
+built by `make build`, not tested and not supported here. They are left in place so the upstream baseline can be updated by re-importing it and reviewing the additional ports separately.
 
 ## Prepared model files
 
-The pack and the draft head are produced once with upstream Strata's tools at the commit above. These are
-the commands that were used, with `U` an upstream checkout, `G` this repository's
+The original pack and draft head were produced once with upstream Strata's tools at commit
+`6f32ec070f23ced9f50e704d854d775da52591ab` (0.1.39). The upgrade does not regenerate those artifacts.
+These are the original provisioning commands, with `U` that original checkout, `G` this repository's
 `third_party/llama.cpp/gguf-py`, and Python 3 with `numpy` and `regex`:
 
 ```

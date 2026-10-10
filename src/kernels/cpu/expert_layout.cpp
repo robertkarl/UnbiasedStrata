@@ -1,6 +1,7 @@
 // src/kernels/cpu/expert_layout.cpp - plan v0.3 P6: the per-layer expert table.  See the header.
 #include "strata/kernels/cpu/expert_layout.hpp"
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -186,6 +187,83 @@ const char* isa_floor_build() {
 #endif
 }
 
+namespace {
+void cpuid_regs(unsigned leaf, unsigned sub, unsigned r[4]) {
+#if defined(_MSC_VER)
+    int x[4];
+    __cpuidex(x, (int) leaf, (int) sub);
+    for (int i = 0; i < 4; ++i) r[i] = (unsigned) x[i];
+#else
+    __cpuid_count(leaf, sub, r[0], r[1], r[2], r[3]);
+#endif
+}
+}  // namespace
+
+int iq256_gather_setting() {
+    static const int s = [] {
+        const char* v = std::getenv("STRATA_IQ256_GATHER");
+        if (v == nullptr || v[0] == '\0') return -1;
+        return std::atoi(v) != 0 ? 1 : 0;
+    }();
+    return s;
+}
+
+bool cpu_gather_fast() {
+    static const bool ok = [] {
+        if (cpu_isa_cap() < 3) return false;   // STRATA_FORCE_ISA: as on a CPU that stops at AVX2
+        unsigned r[4];
+        cpuid_regs(0, 0, r);
+        const unsigned max_leaf = r[0];
+        if (!(r[1] == 0x756e6547u && r[3] == 0x49656e69u && r[2] == 0x6c65746eu)) return false;   // "GenuineIntel"
+        if (max_leaf < 7) return false;
+        cpuid_regs(7, 0, r);
+        if (r[0] < 1) return false;            // no sub-leaf 1
+        cpuid_regs(7, 1, r);
+        if (!((r[0] >> 4) & 1u)) return false; // AVX-VNNI: Alder Lake, Sapphire Rapids and later
+        // The E-core-only parts with AVX-VNNI are not hybrid, so the core type below may not tell them apart: Alder
+        // Lake-N / Twin Lake (6/BEh), Grand Ridge (6/B6h), Sierra Forest (6/AFh), Clearwater Forest (6/DDh).
+        cpuid_regs(1, 0, r);
+        const unsigned family = (r[0] >> 8) & 0xf, model = ((r[0] >> 4) & 0xf) | (((r[0] >> 16) & 0xf) << 4);
+        if (family == 6 && (model == 0xBE || model == 0xB6 || model == 0xAF || model == 0xDD)) return false;
+        return true;
+    }();
+    return ok;
+}
+
+bool cpu_gather_fast_here() {
+    if (!cpu_gather_fast()) return false;
+    static const unsigned max_leaf = [] { unsigned r[4]; cpuid_regs(0, 0, r); return r[0]; }();
+    static const bool hybrid = [] { unsigned r[4]; cpuid_regs(7, 0, r); return ((r[3] >> 15) & 1u) != 0; }();
+    // A CPUID can cost a microsecond under a hypervisor (Windows with VBS), so once per thread.
+    thread_local int here = -1;
+    if (here < 0) {
+        unsigned type = 0;
+        if (max_leaf >= 0x1A) {
+            unsigned r[4];
+            cpuid_regs(0x1A, 0, r);
+            type = r[0] >> 24;
+        }
+        // 40h a performance core, 20h an E-core; no core type is a non-hybrid part (P-cores, see cpu_gather_fast)
+        here = type == 0x40 || (type == 0 && !hybrid) ? 1 : 0;
+    }
+    return here == 1;
+}
+
+bool cpu_avxvnni_ok() {
+    static const bool ok = [] {
+        if (const char* v = std::getenv("STRATA_NO_AVXVNNI"); v != nullptr && std::atoi(v) != 0) return false;
+        if (isa_floor_build()[0] != '\0' || cpu_isa_cap() < 3 || !cpu_avx2_ok()) return false;
+        unsigned r[4];
+        cpuid_regs(0, 0, r);
+        if (r[0] < 7) return false;
+        cpuid_regs(7, 0, r);
+        if (r[0] < 1) return false;            // no sub-leaf 1
+        cpuid_regs(7, 1, r);
+        return ((r[0] >> 4) & 1u) != 0;        // AVX-VNNI; VEX-encoded, so the OS state is AVX's (cpu_avx2_ok)
+    }();
+    return ok;
+}
+
 std::string cpu_name() {
     unsigned r[12] = {};
 #if defined(_MSC_VER)
@@ -209,15 +287,82 @@ std::string cpu_name() {
     return b0 == std::string::npos ? std::string("unknown") : name.substr(b0, b1 - b0 + 1);
 }
 
+// ---- the AVX-512 probe and the oracle flag (#795) ----
+//
+// expert.cpp and iq_avx512.cpp are compiled for AVX-512, and a TU compiled that way may use AVX-512 in ANY of its
+// code.  The code that decides whether this CPU has AVX-512 - and the startup flag every CPU, AVX2-only ones
+// included, runs before that decision - therefore lives here, in a file compiled for the x86-64 baseline.
+namespace {
+std::atomic<bool> g_oracle_q8_0{false};
+}
+
+void expert_set_oracle_q8_0(bool enabled) { g_oracle_q8_0.store(enabled, std::memory_order_relaxed); }
+
+bool expert_oracle_q8_0_enabled() { return g_oracle_q8_0.load(std::memory_order_relaxed); }
+
+const char* CpuFeatures::reason() const {
+    if (usable()) return "ok";
+    // Named individually: "AVX-512 not supported" sends a user looking for a new CPU when the machine may have
+    // AVX-512F and be missing only VNNI, which is a much narrower and more explicable gap.
+    static char buf[160];
+    std::snprintf(buf, sizeof buf, "missing %s%s%s%s%s", avx512f ? "" : "AVX512F ",
+                  avx512bw ? "" : "AVX512BW ", avx512vl ? "" : "AVX512VL ",
+                  avx512_vnni ? "" : "AVX512-VNNI ", avx512_vbmi ? "" : "AVX512-VBMI");
+    return buf;
+}
+
+CpuFeatures cpu_features() {
+    CpuFeatures f;
+    int reg[4] = {0, 0, 0, 0};
+#if defined(_MSC_VER)
+    __cpuid(reg, 0);
+    if (reg[0] < 7) return f;
+    __cpuidex(reg, 7, 0);
+#else
+    unsigned r[4] = {0, 0, 0, 0};
+    __cpuid_count(0, 0, r[0], r[1], r[2], r[3]);
+    if (r[0] < 7) return f;
+    __cpuid_count(7, 0, r[0], r[1], r[2], r[3]);
+    for (int i = 0; i < 4; ++i) reg[i] = (int) r[i];
+#endif
+    const unsigned ebx = (unsigned) reg[1], ecx = (unsigned) reg[2];
+    f.avx512f = (ebx >> 16) & 1u;
+    f.avx512bw = (ebx >> 30) & 1u;
+    f.avx512vl = (ebx >> 31) & 1u;
+    f.avx512_vnni = (ecx >> 11) & 1u;
+    f.avx512_vbmi = (ecx >> 1) & 1u;
+    return f;
+}
+
+void cpu_require_expert_support() {
+    const CpuFeatures f = cpu_features();
+    if (f.usable()) return;
+    std::fprintf(stderr,
+                 "strata: this CPU cannot run the expert kernel: %s.\n"
+                 "        The engine needs AVX512-VNNI and AVX512-VBMI (Intel Ice Lake / AMD Zen 4 or newer).\n"
+                 "        The scalar fallback exists for tests only and is far too slow to decode with.\n",
+                 f.reason());
+    std::exit(1);
+}
+
 void q2_rows_any(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
                  int r0, int r1) {
     if (cpu_avx512_ok()) q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
-    else q2_0_gguf_rows_multi_avx2(w, row_bytes, nblocks, a, nt, out, r0, r1);
+    else if (cpu_avx2_ok()) q2_0_gguf_rows_multi_avx2(w, row_bytes, nblocks, a, nt, out, r0, r1);
+    else q2_0_gguf_rows_multi_avx1(w, row_bytes, nblocks, a, nt, out, r0, r1);   // issue #1699: the third rung
+}
+
+void q2_rows_any_legacy(const uint8_t* w, size_t row_bytes, int nblocks, const ActQ* const* a, int nt, float* const* out,
+                        int r0, int r1) {
+    if (cpu_avx512_ok()) q2_0_gguf_rows_multi(w, row_bytes, nblocks, a, nt, out, r0, r1);
+    else if (cpu_avx2_ok()) q2_0_gguf_rows_multi_avx2_legacy(w, row_bytes, nblocks, a, nt, out, r0, r1);
+    else q2_0_gguf_rows_multi_avx1_legacy(w, row_bytes, nblocks, a, nt, out, r0, r1);
 }
 
 void act_quant_any(const float* x, int n, ActQ& a) {
     if (cpu_avx512_ok()) act_quant_q8_1(x, n, a);
-    else act_quant_q8_1_avx2(x, n, a);
+    else if (cpu_avx2_ok()) act_quant_q8_1_avx2(x, n, a);
+    else act_quant_q8_1_avx1(x, n, a);   // issue #1699
 }
 
 #if !defined(STRATA_NATIVE_EXPERTS)
@@ -226,6 +371,7 @@ bool native_experts_available() noexcept { return false; }
 bool native_fmt(int, int, int64_t, int64_t, NativeFmt&, std::string& err) { err = "built without native experts"; return false; }
 void native_quant_act(const NativeFmt&, const float*, void*) { std::abort(); }
 void native_quant_h(const NativeFmt&, const float*, void*) { std::abort(); }
+int native_gu_mt_min(int) { return 2; }
 void native_gu_rows(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
 void native_down_rows(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
 #endif

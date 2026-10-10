@@ -20,6 +20,7 @@
 #define cudaDevAttrClockRate hipDeviceAttributeClockRate
 #define cudaDevAttrComputeCapabilityMajor hipDeviceAttributeComputeCapabilityMajor
 #define cudaDevAttrComputeCapabilityMinor hipDeviceAttributeComputeCapabilityMinor
+#define cudaDevAttrIntegrated hipDeviceAttributeIntegrated
 #define cudaDeviceGetAttribute hipDeviceGetAttribute
 #define cudaDeviceCanAccessPeer hipDeviceCanAccessPeer
 #define cudaDeviceEnablePeerAccess hipDeviceEnablePeerAccess
@@ -27,6 +28,7 @@
 #define cudaDeviceSynchronize hipDeviceSynchronize
 #define cudaDriverGetVersion hipDriverGetVersion
 #define cudaErrorNotReady hipErrorNotReady
+#define cudaErrorMemoryAllocation hipErrorOutOfMemory
 #define cudaErrorPeerAccessAlreadyEnabled hipErrorPeerAccessAlreadyEnabled
 #define cudaErrorStreamCaptureUnsupported hipErrorStreamCaptureUnsupported
 #define cudaError_t hipError_t
@@ -34,6 +36,7 @@
 #define cudaEventCreateWithFlags hipEventCreateWithFlags
 #define cudaEventDestroy hipEventDestroy
 #define cudaEventDisableTiming hipEventDisableTiming
+#define cudaEventBlockingSync hipEventBlockingSync
 #define cudaEventElapsedTime hipEventElapsedTime
 #define cudaEventQuery hipEventQuery
 #define cudaEventRecord hipEventRecord
@@ -118,6 +121,7 @@ hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes);
 #define cudaStreamWaitEvent hipStreamWaitEvent
 #define cudaStream_t hipStream_t
 #define cudaSuccess hipSuccess
+#define cudaErrorInvalidValue hipErrorInvalidValue
 
 namespace strata::hip_compat {
 template <typename T>
