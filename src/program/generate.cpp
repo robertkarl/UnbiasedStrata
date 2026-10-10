@@ -8637,7 +8637,7 @@ int main(int argc, char** argv) {
                     } else {
                         res_upload();
                         if (secondary_refills) {
-                            const strata::core::OnDevice on(dev0);
+                            const strata::core::OnDevice on(ver.device());
                             bool used = false;
                             for (ASwap& w : aswaps) {
                                 const uint8_t* cached = ver.cached_refill_source(w.layer, w.in);

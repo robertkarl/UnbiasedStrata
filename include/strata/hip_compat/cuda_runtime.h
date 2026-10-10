@@ -121,6 +121,7 @@ hipError_t mem_get_info(size_t* free_bytes, size_t* total_bytes);
 #define cudaStreamWaitEvent hipStreamWaitEvent
 #define cudaStream_t hipStream_t
 #define cudaSuccess hipSuccess
+#define cudaErrorInvalidValue hipErrorInvalidValue
 
 namespace strata::hip_compat {
 template <typename T>
