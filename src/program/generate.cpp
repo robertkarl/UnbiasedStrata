@@ -58,6 +58,7 @@
 #include "strata/kernels/qsa.hpp"
 #include "strata/core/native_head.hpp"
 #include "strata/core/verify.hpp"
+#include "strata/core/commit_limit.hpp"
 #include "strata/core/mtp.hpp"
 #include "strata/prefill/prefill.hpp"
 #include "strata/core/native_dense.hpp"
@@ -11249,7 +11250,7 @@ int main(int argc, char** argv) {
                 };
                 // --adapt-async: the asynchronous tier beside the windows (see adapt_tick).  A stage is idle when neither
                 // of its verifiers has a window in flight (a commit or a snapshot copy waits on nothing of the host's)
-                if (ajob) a_pl_idle = [&](int st) { return !PV[st][0]->in_flight() && !PV[st][1]->in_flight(); };
+                if (ajob) a_pl_idle = [&](int st) { return !stage_ver_p(st, 0).in_flight() && !stage_ver_p(st, 1).in_flight(); };
                 double a_poll_ms = 0.0;
                 auto pl_adapt = [&]() -> bool {   // the blocking tier (--adapt-async 0)
                     if (pl_adapt_thr.joinable() && pl_adapt_done.load()) {
@@ -11308,7 +11309,7 @@ int main(int argc, char** argv) {
                 };
                 const Clock::time_point pl_t0 = Clock::now();
                 for (int st = 0; st < 2; ++st)
-                    for (int par = 0; par < 2; ++par) g_pl_diag.v[st][par] = PV[st][par];
+                    for (int par = 0; par < 2; ++par) g_pl_diag.v[st][par] = &stage_ver_p(st, par);
                 strata::core::diag_pipeline_fn().store(&pl_diag_print);
                 auto pw_bits = [](const PW& w) {
                     return (w.ready ? 1 : 0) | (w.launched ? 2 : 0) | (w.finished ? 4 : 0) | (w.com != 0 ? 8 : 0) |
@@ -11528,7 +11529,7 @@ int main(int argc, char** argv) {
                     // ---- the last stage: A, once every front stage is done
                     if (A.finished && !A.s1) {
                         if (chain_kind == 1 && !B.ready) ++pl_late;   // stage 0 idles until the chain has B
-                        if (ajob) a_gap(1);   // --adapt-async: stage 1 is idle until this launch
+                        if (ajob) a_gap(n_stages - 1);   // --adapt-async: the last stage is idle until this launch
                         if (!V1(A).pl_launch(A.T, A.tok, A.p, err)) return die(err);
                         A.s1 = true;
                         tre("L1", A.seq, A.T);
@@ -11544,6 +11545,8 @@ int main(int argc, char** argv) {
                     chain_kind = 0;
                     int a = 0;
                     while (a < A.T - 1 && A.tok[a + 1] == outp[(size_t) a]) ++a;
+                    a = strata::core::emitted_prefix_length({outp.data(), (size_t) a + 1},
+                                                            max_new - produced_n, o.eos_ids) - 1;
                     if (!V1(A).pl_commit_async(a + 1, err)) return die(err);
                     if (!accept_usage(A.seq & 1, a + 1)) return die(err);
                     for (int i = 0; i <= a; ++i) consumed.push_back(A.tok[i]);
@@ -11796,6 +11799,8 @@ int main(int argc, char** argv) {
                 }
                 int a = 0;
                 while (a < T - 1 && window[(size_t) a + 1] == outv[(size_t) a]) ++a;
+                a = strata::core::emitted_prefix_length({outv.data(), (size_t) a + 1},
+                                                        max_new - produced_n, o.eos_ids) - 1;
                 if (from_sfx) { ++sfx_windows; sfx_drafts += T - 1; sfx_ok += a; }
                 if (chain_n > 0) { ++chain_windows; chain_drafts += chain_n; chain_ok += std::max(0, a - (T_mtp - 1)); }
                 if (!from_sfx && !first_window)
