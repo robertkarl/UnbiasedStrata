@@ -415,6 +415,7 @@ Verifier::~Verifier() {
     }
     if (cs_) cudaStreamSynchronize(cs_);
     if (sh_cs_) cudaStreamSynchronize(sh_cs_);
+    miss_cache_snapshot_.close();
     for (auto& e : exec_)
         if (e) cudaGraphExecDestroy(e);
     for (auto& e : exec_nr_)
@@ -696,6 +697,23 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         std::fprintf(stderr, "strata readonly miss cache: enabled, ways=%d layers=%lld bytes=%llu; "
                              "immutable secondary copies, no writebacks\n", miss_cache_ways_, (long long)g.n_layers,
                      (unsigned long long)((uint64_t)g.n_layers * miss_cache_ways_ * strata::kernels::cpu::expert_layout().max_blob));
+    }
+    if (const char* value = std::getenv("STRATA_Q8_CACHE_TAG_SNAPSHOT")) {
+        if (std::strcmp(value, "0") != 0 && std::strcmp(value, "1") != 0) {
+            err = "verify: STRATA_Q8_CACHE_TAG_SNAPSHOT must be 0 or 1";
+            return false;
+        }
+        if (*value == '1') {
+            if (!miss_cache_ways_ || miss_cache_snapshot_.open(g.n_layers, g.n_expert, miss_cache_ways_,
+                    (size_t)strata::kernels::cpu::expert_layout().max_blob,
+                    miss_cache_tags_, miss_cache_data_) != cudaSuccess) {
+                err = "verify: cannot create snapshot of the active Q8 secondary cache";
+                return false;
+            }
+            std::fprintf(stderr, "strata miss cache tag snapshot: enabled, bytes=%llu; "
+                                 "copy before existing end-of-window synchronization\n",
+                         (unsigned long long)miss_cache_snapshot_.bytes());
+        }
     }
     sink_.staging = (unsigned long long) staging_;
     sink_.staging_cap = kStagingBlobs;
@@ -2059,6 +2077,10 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     if (trace_h_ != nullptr) std::memset(trace_h_, 0, trace_n_ * 8);   // #649: this window's breadcrumbs only
     std::atomic_thread_fence(std::memory_order_seq_cst);
     trace_ev("WINDOW", -1, -1, pos0 * 16 + T);
+    if (!miss_cache_snapshot_.invalidate()) {
+        err = "verify: previous cache tag snapshot is still in flight";
+        return false;
+    }
     ms_host += ms_since(t0);
     VDBG("staged; launching\n");
     if (ar_on() && h_plan_err_ != nullptr) *(volatile uint32_t*) h_plan_err_ = 0;
@@ -2172,9 +2194,17 @@ bool Verifier::run(int T, const int32_t* tokens, int64_t pos0, PoolMultiFn pool,
     // spin kernel outlives the process - the case that left Windows GPUs "lost" until a power cycle.  The wait
     // itself stays a blocking sync: a cudaStreamQuery poll here cost IQ3_S ~3% decode (a core calling the driver
     // beside the expert workers).
+    if (miss_cache_snapshot_.enabled() && miss_cache_snapshot_.enqueue(cs_) != cudaSuccess) {
+        err = "verify: cannot enqueue cache tag snapshot";
+        return false;
+    }
     trace_ev("SYNC", -1, -1, 0);
     const cudaError_t se = cudaStreamSynchronize(cs_);
     trace_ev("SYNCED", -1, -1, (int64_t) se);
+    if (miss_cache_snapshot_.enabled() && !miss_cache_snapshot_.complete_after_stream_sync(se)) {
+        err = "verify: cache tag snapshot completion failed";
+        return false;
+    }
     if (se != cudaSuccess) { err = std::string("verify: ") + cudaGetErrorString(se); return false; }
     if (ar_on() && h_plan_err_ != nullptr && *(volatile uint32_t*) h_plan_err_ != 0) {   // #871: refresh_ar saw the table whole
         *(volatile uint32_t*) h_plan_err_ = 0;

@@ -8111,6 +8111,21 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "strata serve: cannot create the refill stream\n");
             return 1;
         }
+        bool secondary_refills = false;
+        if (const char* flag = std::getenv("STRATA_Q8_ASYNC_REFILL")) {
+            if (std::strcmp(flag,"0") && std::strcmp(flag,"1")) return 2;
+            secondary_refills = *flag == '1';
+            if (secondary_refills && (!o.adapt_async || multi_gpu || peer.valid() || remote_opt || o.batch > 1 || o.pipeline_windows || !ver.miss_cache_snapshot_enabled() || ver.device_plan_enabled())) {
+                std::fprintf(stderr,"strata: secondary refills require async single-device serving, cache snapshot and host planning\n"); return 2;
+            }
+        }
+        uint64_t secondary_d2d_bytes = 0, secondary_h2d_bytes = 0;
+        struct SecondaryReadEvent {
+            cudaEvent_t event = nullptr;
+            ~SecondaryReadEvent() { if (event) { cudaEventSynchronize(event); cudaEventDestroy(event); } }
+        } secondary_read;
+        cudaEvent_t& secondary_read_done = secondary_read.event;
+        if (secondary_refills && cudaEventCreateWithFlags(&secondary_read_done,cudaEventDisableTiming) != cudaSuccess) return 1;
         // plan v0.3 P6: swaps in flight - (residency index, slot) admitted when adapt_ev has completed
         std::vector<std::pair<int32_t, int32_t>> pending;
         int pending_age = 0;   // the windows the pending swaps have waited (adapt_lag)
@@ -8315,7 +8330,7 @@ int main(int argc, char** argv) {
         // verifiers publish every row whatever they say): once, when the loop has drained.  The loop ticks once per
         // verdict (after the drafter's chain is launched) and, while a round is in flight, every 0.5 ms without
         // counting a window.
-        struct ASwap { int32_t layer, in, out, slot; int home; int64_t j; bool exchange; const uint8_t* from; };
+        struct ASwap { int32_t layer, in, out, slot; int home; int64_t j; bool exchange; const uint8_t* from; bool secondary = false; };
         struct AHome { strata::core::ExpertCache* cache; cudaStream_t stream; cudaEvent_t ev; int dev; bool used; };
         enum class AState { Idle, Pick, CopyBack, SwapIn, RamFence, Commit };
         AState astate = AState::Idle;
@@ -8422,6 +8437,7 @@ int main(int argc, char** argv) {
         auto a_in_one = [&](const ASwap& w, const uint8_t* b) {   // step 2: one copy in (H2D), on its home's stream
             AHome& h = ahomes[(size_t) w.home];
             const strata::core::OnDevice on(h.dev);
+            if (secondary_refills) secondary_h2d_bytes += (size_t) strata::kernels::cpu::expert_layout().blob_bytes(w.layer);
             if (const cudaError_t e = cudaMemcpyAsync(h.cache->device_slot(w.slot), b,
                                                       (size_t) strata::kernels::cpu::expert_layout().blob_bytes(w.layer),
                                                       cudaMemcpyHostToDevice, h.stream); e != cudaSuccess) {
@@ -8437,8 +8453,9 @@ int main(int argc, char** argv) {
         };
         auto a_copy_in = [&]() {   // step 2 on the job thread (the serial loop): each source read, then copied in
             std::vector<uint8_t> used(ahomes.size(), 0);
+            for (const ASwap& w : aswaps) if (w.secondary) used[(size_t) w.home] = 1;
             for (const ASwap& w : aswaps)
-                if (const uint8_t* b = a_from(w)) {
+                if (!w.secondary) if (const uint8_t* b = a_from(w)) {
                     a_in_one(w, b);
                     used[(size_t) w.home] = 1;
                 }
@@ -8557,6 +8574,20 @@ int main(int argc, char** argv) {
                         ajob->post(a_stage_in);
                     } else {
                         res_upload();
+                        if (secondary_refills) {
+                            const strata::core::OnDevice on(dev0);
+                            bool used = false;
+                            for (ASwap& w : aswaps) {
+                                const uint8_t* cached = ver.cached_refill_source(w.layer, w.in);
+                                if (!cached) continue;
+                                const size_t nb = (size_t) strata::kernels::cpu::expert_layout().blob_bytes(w.layer);
+                                if (cudaMemcpyAsync(xcache.device_slot(w.slot), cached, nb, cudaMemcpyDeviceToDevice,
+                                                    adapt_stream) != cudaSuccess) return false;
+                                w.secondary = true; used = true; secondary_d2d_bytes += nb;
+                            }
+                            if (used && (cudaEventRecord(secondary_read_done, adapt_stream) != cudaSuccess ||
+                                         cudaStreamWaitEvent(ver.stream(), secondary_read_done, 0) != cudaSuccess)) return false;
+                        }
                         ajob->post(a_copy_in);
                     }
                     astate = AState::SwapIn;
@@ -12036,6 +12067,9 @@ int main(int argc, char** argv) {
                              (unsigned long long) look, (double) miss * 4224.0 / 1048576.0,
                              over ? " - OVERFLOW (too few resident cells)" : "");
             }
+            if (secondary_refills)
+                std::fprintf(stderr,"strata secondary refill payload: H2D=%llu D2D=%llu (cumulative)\n",
+                    (unsigned long long)secondary_h2d_bytes,(unsigned long long)secondary_d2d_bytes);
             if (sfx_windows > 0)
                 std::fprintf(stderr, "strata serve: suffix drafts: %lld windows, %lld of %lld drafts accepted\n",
                              (long long) sfx_windows, (long long) sfx_ok, (long long) sfx_drafts);
