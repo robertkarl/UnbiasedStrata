@@ -1,15 +1,18 @@
 // src/kernels/cpu/pool.cpp - P2.S3: the CPU expert pool.  Read pool.hpp first; it explains the protocol.
 #include "strata/kernels/cpu/pool.hpp"
 #include "strata/core/progress.hpp"
+#include "strata/platform/aux_cpus.hpp"
 #include "strata/kernels/cpu/expert_layout.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <chrono>
 #include <immintrin.h>
 
 #include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
@@ -29,7 +32,31 @@ constexpr uint64_t pack_head(uint32_t epoch, uint32_t n, uint32_t i) {
 }
 }  // namespace
 
+namespace {
+std::atomic<int> g_host_core{(int) HostCore::First};
+}  // namespace
+
+void set_host_core(HostCore where) { g_host_core.store((int) where); }
+HostCore host_core_setting() { return (HostCore) g_host_core.load(); }
+
+static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affinity);
+
 CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
+    CpuTopology topo = detect_cpu_topology_impl(skip_first, affinity);
+    // --host-core last: the host takes the last core, the workers the others (the first included)
+    if (skip_first && host_core_setting() == HostCore::Last && !topo.is_hybrid && topo.host_core >= 0 &&
+        !topo.worker_cores.empty()) {
+        const int last = topo.worker_cores.back();
+        topo.worker_cores.pop_back();
+        topo.worker_cores.insert(topo.worker_cores.begin(), topo.host_core);
+        topo.host_core = last;
+    }
+    return topo;
+}
+
+int planned_host_core(PoolAffinity affinity) { return detect_cpu_topology(true, affinity).host_core; }
+
+static CpuTopology detect_cpu_topology_impl(bool skip_first, PoolAffinity affinity) {
     CpuTopology topo;
 #if defined(_WIN32)
     // Ask the OS rather than assuming a layout.  `hardware_concurrency()` returns LOGICAL processors, and on
@@ -177,6 +204,30 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
         return v;
     };
 
+    // #798: a cpulist ("0-7,16") of one of the hybrid PMU's CPU sets: /sys/devices/cpu_core/cpus and cpu_atom/cpus
+    auto cpulist_read = [](const char* path, std::vector<int>& out) -> bool {
+        std::FILE* f = std::fopen(path, "r");
+        if (!f) return false;
+        char text[1024] = {0};
+        const size_t n = std::fread(text, 1, sizeof text - 1, f);
+        std::fclose(f);
+        text[n] = '\0';
+        for (const char* p = text; *p;) {
+            char* end = nullptr;
+            const long lo = std::strtol(p, &end, 10);
+            if (end == p) break;
+            long hi = lo;
+            if (*end == '-') {
+                p = end + 1;
+                hi = std::strtol(p, &end, 10);
+            }
+            for (long c = lo; c <= hi && c < 4096; ++c) out.push_back((int) c);
+            p = end;
+            while (*p == ',' || *p == ' ' || *p == '\n')  ++p;
+        }
+        return !out.empty();
+    };
+
     std::vector<int> allowed;
     std::vector<unsigned long> allowed_mask;
     if (detail::get_thread_affinity(allowed_mask, &allowed) != 0) {
@@ -215,10 +266,23 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
         all_cpus.push_back(cl);
     }
 
-    topo.is_hybrid = (max_cap > 0 && max_cap > min_cap);
+    // #798: which CPUs are E-cores.  Intel's hybrid PMU lists them (cpu_atom/cpus beside cpu_core/cpus); without it a
+    // CPU is an E-core when its capacity is under 90% of the largest.  Turbo Boost Max 3.0 gives the "favored"
+    // P-cores a slightly higher capacity (1024 against 1012 on a Core Ultra 7 270K Plus): "capacity == the maximum"
+    // counted 2 of its 8 P-cores and started 1 pool worker.
+    std::vector<int> pmu_core, pmu_atom;
+    const bool pmu = cpulist_read("/sys/devices/cpu_core/cpus", pmu_core) &&
+                     cpulist_read("/sys/devices/cpu_atom/cpus", pmu_atom);
+    auto is_e = [&](const CoreLinux& cl) {
+        if (pmu) return std::find(pmu_atom.begin(), pmu_atom.end(), cl.cpu) != pmu_atom.end();
+        return max_cap > 0 && cl.cap > 0 && cl.cap * 10 < max_cap * 9;
+    };
+    bool any_e = false, any_p = false;
+    for (const auto& cl : all_cpus) (is_e(cl) ? any_e : any_p) = true;
+    topo.is_hybrid = any_e && any_p;
     if (topo.is_hybrid) {
         for (const auto& cl : all_cpus) {
-            if (cl.cap == max_cap) {
+            if (!is_e(cl)) {
                 if (!cl.is_sibling) topo.p_cores++;
                 topo.p_threads++;
             } else {
@@ -233,7 +297,9 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
     if (affinity == PoolAffinity::All || !topo.is_hybrid) {
         if (topo.is_hybrid)   // #642: the P-cores first (see the Windows branch)
             std::stable_sort(all_cpus.begin(), all_cpus.end(),
-                             [](const CoreLinux& x, const CoreLinux& y) { return x.cap > y.cap; });
+                             [&](const CoreLinux& x, const CoreLinux& y) {
+                                 return is_e(x) != is_e(y) ? !is_e(x) : x.cap > y.cap;
+                             });
         for (const auto& cl : all_cpus) {
             if (!cl.is_sibling) topo.worker_cores.push_back(cl.cpu);
         }
@@ -250,7 +316,7 @@ CpuTopology detect_cpu_topology(bool skip_first, PoolAffinity affinity) {
     std::vector<int> e_cores;
 
     for (const auto& cl : all_cpus) {
-        if (cl.cap == max_cap) {
+        if (!is_e(cl)) {
             if (!cl.is_sibling) p_primaries.push_back(cl.cpu);
             else p_siblings.push_back(cl.cpu);
         } else {
@@ -368,8 +434,9 @@ void ExpertPool::diag(std::FILE* f) const {
     std::fprintf(f, " for %lld ms\n", (long long) (now_ms() - hstate_ms_.load()));
 }
 
-ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity affinity)
-    : host_works_(host_works), affinity_(affinity), topo_(detect_cpu_topology(true, affinity)) {
+ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity affinity, int tasks)
+    : tasks_(tasks), host_works_(host_works), affinity_(affinity), topo_(detect_cpu_topology(true, affinity)) {
+    if (tasks < 0 || tasks > kMaxTasks) throw std::invalid_argument("expert pool tasks must be in 0..4096");
     if (const char* e = std::getenv("STRATA_POOL_SPIN_US"))   // a test knob; see kSpinBeforeSleep
         spin_before_sleep_ = std::chrono::microseconds((std::max)(0, std::atoi(e)));
     if (n_workers > 0) {
@@ -392,6 +459,7 @@ ExpertPool::ExpertPool(int n_workers, bool pin, bool host_works, PoolAffinity af
     for (int i = 0; i < n_; ++i) {
         const int core = pin ? (i < (int) topo_.worker_cores.size() ? topo_.worker_cores[(size_t) i] : -1) : -1;
         threads_.emplace_back([this, i, core] {
+            strata::aux_cpus::note_owned_thread();   // --aux-cpus never moves a worker
             pin_this_thread(core, i);
             worker(i);
         });
@@ -647,6 +715,10 @@ void ExpertPool::run_split(ExpertJob* jobs, int n) {
     ms_drain_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
+int ExpertPool::phase_tasks(int64_t rows) const {
+    return tasks_ == 0 ? 3 * (n_ + (host_works_ ? 1 : 0)) : (int) (std::min)(rows, (int64_t) tasks_);
+}
+
 void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
     if (n <= 0) return;
     if (n > kMaxSplitMulti || expert_oracle_q8_0_enabled()) {
@@ -666,9 +738,8 @@ void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
     }
     const auto t0 = std::chrono::steady_clock::now();
     mjobs_ = jobs;
-    const int threads = n_ + (host_works_ ? 1 : 0);
-    mtasks_ = 3 * threads;
     mrows_ = (int64_t) n * FF;
+    mtasks_ = phase_tasks(mrows_);
     run_phase(3, mtasks_);
     const auto t1 = std::chrono::steady_clock::now();
     for (int e = 0; e < n; ++e)
@@ -676,6 +747,7 @@ void ExpertPool::run_split_multi(ExpertJobMulti* jobs, int n) {
             act_quant_q8_1(split_multi_[(size_t) e].ff[t], FF, split_multi_[(size_t) e].a2[t]);
     const auto t2 = std::chrono::steady_clock::now();
     mrows_ = (int64_t) n * H;
+    mtasks_ = phase_tasks(mrows_);
     run_phase(4, mtasks_);
     const auto t3 = std::chrono::steady_clock::now();
     ms_multi_gu += std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -694,9 +766,8 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
         const int nb = (std::min)(kMaxSplitMulti, n - b0);
         mjobs_ = jobs + b0;
         nfmt_ = &f;
-        const int threads = n_ + (host_works_ ? 1 : 0);
-        mtasks_ = 3 * threads;
         mrows_ = (int64_t) nb * FF;
+        mtasks_ = phase_tasks(mrows_);
         const auto a = std::chrono::steady_clock::now();
         run_phase(5, mtasks_);
         const auto b = std::chrono::steady_clock::now();
@@ -706,6 +777,7 @@ void ExpertPool::run_split_multi_native(const NativeFmt& f, ExpertJobMulti* jobs
                 else native_quant_h(f, split_multi_[(size_t) e].ff[t], split_multi_[(size_t) e].hq[t]);
         const auto c = std::chrono::steady_clock::now();
         mrows_ = (int64_t) nb * H;
+        mtasks_ = phase_tasks(mrows_);
         run_phase(6, mtasks_);
         const auto d = std::chrono::steady_clock::now();
         ms_multi_gu += std::chrono::duration<double, std::milli>(b - a).count();

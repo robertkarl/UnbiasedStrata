@@ -98,6 +98,7 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
         int a = 0, b = 0;
         cudaDeviceCanAccessPeer(&a, 0, device);
         cudaDeviceCanAccessPeer(&b, device, 0);
+        if (const char* np = std::getenv("STRATA_PEER_NO_P2P"); np != nullptr && std::atoi(np) != 0) a = 0;   // test knob: pretend the pair has no P2P
         p2p_ = a && b;
         if (p2p_) {
             On on0(0);
@@ -156,7 +157,12 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
     // open() zeroes the arena with cudaMemset on the legacy stream, which is not ordered against the non-blocking
     // refill stream: wait for it, or the zeroing can land on top of the fills
     if (!ck(cudaDeviceSynchronize(), "arena zeroing", err)) { close(); return false; }
-    for (const auto& pr : pick) {
+    // mapped reads: advise the next kAhead pairs so their reads overlap
+    constexpr size_t kAhead = 256;
+    const bool advise = src.advise_pairs(pick.data(), (int64_t) std::min(kAhead, pick.size()));
+    for (size_t i = 0; i < pick.size(); ++i) {
+        const auto& pr = pick[i];
+        if (advise && i + kAhead < pick.size()) (void) src.advise_pairs(&pick[i + kAhead], 1);
         const int32_t slot = cache_.admit(pr.first, pr.second);
         const uint8_t* b = src.blob(pr.first, pr.second);
         if (slot < 0 || b == nullptr || !cache_.fill_slot(slot, b, refill_, err, (int64_t) lay.blob_bytes(pr.first))) {
@@ -164,6 +170,7 @@ bool PeerExperts::open(int device, const std::vector<std::pair<int32_t, int32_t>
             close();
             return false;
         }
+        src.note_async_read(b, refill_);   // #1237
         res_[(size_t) (pr.first * n_expert + pr.second)] = slot;
     }
     if (!ck(cudaStreamSynchronize(refill_), "fill", err)) { close(); return false; }
