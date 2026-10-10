@@ -51,6 +51,7 @@ Tested so far:
 | Machine | What was checked |
 | --- | --- |
 | RTX 3090 pods, CUDA 12.8, g++ 13.3 | `git submodule update --init` and `make build` complete with network access blocked for the build. The model loads and answers chat requests, in the fallback mode described under Known problems. |
+| Intel Arc Pro B65 32 GB, Ryzen 5 5600X, 31 GB RAM, Ubuntu 24.04 (xe driver), oneAPI 2026.1.1 | The experimental Intel build only; see [Intel Arc (experimental)](#intel-arc-experimental). |
 
 ## Build
 
@@ -80,6 +81,38 @@ It listens on `127.0.0.1:8080` and serves `POST /v1/chat/completions` (with stre
 
 Requests are greedy unless they set a `temperature` above zero. The model thinks before it answers; send
 `"reasoning_effort": "none"` to turn that off. Tool calling follows the OpenAI format (`tools`, `tool_calls`).
+
+## Intel Arc (experimental)
+
+`make build-sycl` builds the same binary, `build-sycl/unbiased-strata`, around upstream's SYCL port of the engine
+instead of the CUDA one (see [UPSTREAM.md](UPSTREAM.md)). It is off by default and `make build` does not change.
+It needs oneAPI's DPC++ compiler and oneMKL (2026.1) and Intel's GPU compute runtime with Level Zero; source
+oneAPI's `setvars.sh` first. `SYCL_AOT=bmg-g31` (the default) compiles the GPU code for the Arc Pro B65 and B70;
+`SYCL_AOT=` leaves it to be compiled for the card at first start.
+
+```
+make build-sycl
+```
+
+On Intel the engine runs the way upstream's Intel setup runs it: the experts are streamed from the GGUF into
+VRAM, the ones that do not fit are kept in pinned host memory that the GPU reads over PCIe, and the n-gram table
+is read from the SSD by row. It therefore needs far less RAM than the CUDA build. The binary passes those
+options itself and sets `STRATA_VERIFY_DEVICE_PLAN=1` and `STRATA_VERIFY_NO_HOST=1` unless they are already set.
+
+Checked on one machine: Arc Pro B65 32 GB, Ryzen 5 5600X, 31 GB RAM, Ubuntu 24.04 with kernel 7.0 (xe),
+oneAPI 2026.1.1, compute runtime 26.35. The build took ggml from the submodule and has no fetch step. The model
+was the IQ2_XS shards (not IQ3_XXS, which needs more RAM than this machine has) with the draft head, at 32K
+context, run in a Docker container with no network. 22.6 GiB of experts were held in VRAM and 10.5 GiB in host
+memory. Chat requests were answered with coherent text. One run each, greedy:
+
+| Prompt | Prompt speed | Generation speed | Drafts accepted |
+| --- | --- | --- | --- |
+| 42 tokens | | 52.4 tokens/s | 82% |
+| 4,088 tokens | 684 tokens/s | 51.1 tokens/s | 73% |
+| 27,995 tokens | 757 tokens/s | 48.2 tokens/s | 74% |
+
+On the same machine and files, upstream's later Intel port (commit `fb58e0d`) read prompts
+faster (901 and 864 tokens/s at 4K and 28K) and generated at a similar speed. Updating the port is not done here.
 
 ## Model files
 
