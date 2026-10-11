@@ -2,9 +2,9 @@
 // front of the unmodified Strata engine.
 //
 // One binary, two roles.  Started normally it is the front end: it starts a copy of itself with `--engine`, which
-// runs the engine's own program (frontend/engine_entry.cpp) in serve mode, and talks to it over a pipe in the
-// engine's line protocol (token ids in, token ids out).  That is the process model upstream's Python server uses,
-// so the engine runs exactly as upstream tested it.
+// runs the engine's own program (frontend/engine_entry.cpp; engine_entry_sycl.cpp in the Intel build) in serve
+// mode, and talks to it over a pipe in the engine's line protocol (token ids in, token ids out).  That is the
+// process model upstream's Python server uses, so the engine runs exactly as upstream tested it.
 //
 // The tokenizer and the chat template come from llama.cpp (the pinned submodule): the GGUF's own vocabulary and
 // its own Jinja template.  Nothing here opens an outgoing connection.
@@ -576,8 +576,21 @@ int main(int argc, char** argv) {
     std::vector<std::string> eargs = {
         "unbiased-strata", "--engine", "--serve", "--pack", o.pack, "--native", o.model, "--ple-gguf", shard2,
         "--expert-profile", profile, "--expert-cache", "auto", "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5",
-        "--mtp", o.mtp, "--max-context", std::to_string(o.ctx), "--ple-io", "ram"};
+        "--mtp", o.mtp, "--max-context", std::to_string(o.ctx)};
+#ifdef UNBIASED_STRATA_SYCL
+    // The Intel (SYCL) engine, with the settings upstream's Intel setup gives it: experts streamed from the GGUF into
+    // VRAM, the ones that do not fit mirrored in pinned host memory, and the n-gram table read from the SSD by row
+    // (upstream's default), so it runs with far less RAM than the CUDA build.  The two switches select the verify
+    // plan the port was tested with; without them an expert held off the card gives NaNs on the xe driver.
+    eargs.insert(eargs.end(), {"--stream-experts", "--vram-reserve-mib", o.ctx <= 32768 ? "1024" : "2048"});
+    if (o.ctx > 32768) { eargs.push_back("--prefill"); eargs.push_back("4096"); }
+    eargs.push_back("--kv"); eargs.push_back("int8");
+    ::setenv("STRATA_VERIFY_DEVICE_PLAN", "1", 0);
+    ::setenv("STRATA_VERIFY_NO_HOST", "1", 0);
+#else
+    eargs.push_back("--ple-io"); eargs.push_back("ram");
     if (o.ctx > 8192) { eargs.push_back("--kv"); eargs.push_back("int8"); }
+#endif
     if (o.threads > 0) { eargs.push_back("--pool-workers"); eargs.push_back(std::to_string(o.threads)); }
     for (const std::string& e : o.extra) eargs.push_back(e);
     std::signal(SIGPIPE, SIG_IGN);

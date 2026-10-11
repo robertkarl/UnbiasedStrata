@@ -5,6 +5,7 @@
 | What | Where | Version |
 | --- | --- | --- |
 | Engine | https://github.com/Niko1221/Strata | commit `6f32ec070f23ced9f50e704d854d775da52591ab`, engine 0.1.39 |
+| Intel SYCL port (`sycl/`, experimental) | https://github.com/Niko1221/Strata | the same commit `6f32ec0`, plus upstream's `9661ecb` and `a5682fe` (see below) |
 | ggml (CPU backend, CUDA matrix kernels) | https://github.com/ggml-org/llama.cpp, as the submodule `third_party/llama.cpp` | commit `3cf03257f219afbe7334045ff7c6a06ac68c627d`, the one upstream Strata pins |
 
 The first commit of this repository is the upstream snapshot as published. One file was not imported:
@@ -15,10 +16,17 @@ The first commit of this repository is the upstream snapshot as published. One f
 
 - **Build:** ggml is taken from the submodule. Upstream cloned llama.cpp during the build.
 - **Removed:** the Python installer and launchers, the Python server and web app, the Python tools, the
-  Intel SYCL port, Docker files, benchmark results, the test suite, translations, and all docs except
+  Intel port's installer, server and tools, Docker files, benchmark results, the test suite, translations, and all docs except
   `docs/upstream/DETAILS.md` and the paper.
 - **Added:** `frontend/`, the C++ front end (tokenizer, chat template, output parser and HTTP API, using
   llama.cpp's code from the submodule), and a build target that links it with the engine into one binary.
+- **Intel Arc (experimental):** `sycl/` is upstream's SYCL port of the engine at the commit above, without
+  `setup_intel.py`, `serve/` and `tools/`. Two later upstream commits are applied to it: `9661ecb` (the port
+  did not compile against engine 0.1.39: `ThreadAffinity` and the `NativeDense::load` layer range) and
+  `a5682fe` (a migrated `cudaStreamQuery` check that always read "empty", which stops the engine when experts
+  are mirrored in host memory). `sycl/CMakeLists.txt` takes ggml from the submodule instead of cloning
+  llama.cpp, and links the front end into `unbiased-strata` as the CUDA build does
+  (`frontend/engine_entry_sycl.cpp`). `make build-sycl` builds it; `make build` is unchanged.
 - **Engine source (`src/`, `include/`):** unchanged so far. The engine's own program is compiled into the
   binary with its entry point renamed; the front end starts it as a child process.
 
