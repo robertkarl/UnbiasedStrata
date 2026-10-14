@@ -5,6 +5,7 @@
 // the kernel walks the chunk's tokens in order inside one launch.
 #pragma once
 
+#include "strata/kernels/gdn.hpp"
 #include "strata/kernels/kv_stream.hpp"
 #include "strata/kernels/rope_scaling.hpp"
 
@@ -37,26 +38,48 @@ void gr_write(float* R, const float* bo, const float* inj, int64_t inj_ld, int64
 /// R[t, c, :] = e[t, :] for all four streams (the embedding broadcast).
 void gr_broadcast(const float* e, float* R, int64_t T, void* stream);
 
-// ---- GDN (state 128, 16 k heads, 48 v heads, 10240 conv channels, 4 taps)
-/// gate[t,h] = softplus(ab[t,h] + dt[h]) * ssm_a[h];  beta[t,h] = sigmoid(ab[t, 48 + h])  (ab: [T, 96])
-void gdn_gates(const float* ab, const float* dt, const float* ssm_a, float* gate, float* beta, int64_t T, void* stream);
+// ---- the plain residual block (hc = 1: Qwen3.6).  x = rms_norm(R, w) -> mixer -> R += out, per half.
+/// mixed[t, :] = R[t, :] * rsqrt(mean R[t, :]^2 + eps) * w over rows of n, with its BF16 and FP16 images (any output
+/// may be null); `mixed16_lo` as in gr_norm.
+void rms_norm_images(const float* R, const float* w, float eps, float* mixed, uint16_t* mixed16, uint16_t* mixed_h,
+                     int64_t T, int64_t n, void* stream, uint16_t* mixed16_lo = nullptr);
+/// R[i] += bo[i] over n values (the residual write of a plain block).
+void residual_add(float* R, const float* bo, int64_t n, void* stream);
+
+// ---- GDN (state 128, 4 taps; the head geometry per model: Flash-Next 48 v heads / 16 k heads / 10240 conv
+// channels with the sigmoid(z) output gate, Qwen3.6 32 / 16 / 8192 with SiLU(z)).  The kernels are built for those
+// two geometries (gdn_geometry_supported); any other stops the process, as the kernels' convention is.  The gate is
+// the decode kernels' `GdnGate` (strata/kernels/gdn.hpp), from `ModelGeometry::gdn_gate()`: required, no default, so
+// the prompt path and the decode path agree by construction.
+struct GdnGeom {
+    int hv;                      ///< value heads (ssm_v_heads)
+    int hk;                      ///< key heads (ssm_k_heads); v-head h uses k-head h % hk
+    int c;                       ///< conv channels: 2 * hk * 128 + hv * 128 (q | k | v)
+    strata::kernels::GdnGate gate;   ///< the output gate: Silu (Qwen3.6) or Sigmoid (Flash-Next)
+};
+bool gdn_geometry_supported(int hv, int hk, int c);
+/// gate[t,h] = softplus(ab[t,h] + dt[h]) * ssm_a[h];  beta[t,h] = sigmoid(ab[t, hv + h])  (ab: [T, 2 hv])
+void gdn_gates(const float* ab, const float* dt, const float* ssm_a, float* gate, float* beta, int64_t T, const GdnGeom& g,
+               void* stream);
 /// The 4-tap causal conv + SiLU over the chunk (history [C][3] in, updated to the chunk's last three inputs), then
 /// the L2 norm of the q and k heads of every token.  h: [T, C].
-void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, int64_t T, float eps, void* stream);
-/// The recurrence over the chunk, state in registers; y16[t] = rmsnorm(o) * gamma * sigmoid(z) in FP16 (what the
-/// out projection reads); y is FP32 scratch.
+void gdn_conv(float* history, const float* qkv, const float* conv_w, float* h, int64_t T, float eps, const GdnGeom& g,
+              void* stream);
+/// The recurrence over the chunk, state in registers; y16[t] = rmsnorm(o) * gamma * gate(z) in FP16 (what the
+/// out projection reads; gate = sigmoid or SiLU per `g`); y is FP32 scratch.  State: [128 k][hv][128 v] floats.
 void gdn_recurrence(float* state, const float* h, const float* gate, const float* beta, const float* z,
-                    const float* gamma, float eps, float* y, uint16_t* y16, int64_t T, void* stream);
+                    const float* gamma, float eps, float* y, uint16_t* y16, int64_t T, const GdnGeom& g, void* stream);
 
 // ---- MoE
-/// softmax over 512, top-10 (ties to the lower id), weights renormalised over the ten (the native router).
-void route(const float* logits, int32_t* ids, float* weights, int64_t T, int64_t n_expert, void* stream);
+/// softmax over n_expert, top-k (ties to the lower id), the k weights renormalised (the native router's semantics;
+/// k <= 32 and k <= n_expert).  512 and 256 experts take the warp kernel, any other count router_top10.
+void route(const float* logits, int32_t* ids, float* weights, int64_t T, int64_t n_expert, int64_t k, void* stream);
 /// Expert blob (Strata pack layout, Q2_0) -> BF16 matrices: gate/up interleaved [1280, 2560], down [2560, 640].
 void blob_dequant(const uint8_t* blob, uint16_t* gu16, uint16_t* down16, void* stream);
-/// h16[n, r] = fp16(silu(gu[n, 2r]) * gu[n, 2r + 1])   (the interleaved expert gate/up)
-void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, void* stream);
-/// h16[n, r] = fp16(silu(g[n, r]) * u[n, r])   (the shared expert, gate and up separate, width 640)
-void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, void* stream);
+/// h16[n, r] = fp16(silu(gu[n, 2r]) * gu[n, 2r + 1])   (the interleaved expert gate/up, rows of 2 n_ff)
+void swiglu_interleaved(const float* gu, uint16_t* h16, int64_t n, int64_t n_ff, void* stream);
+/// h16[n, r] = fp16(silu(g[n, r]) * u[n, r])   (the shared expert, gate and up separate, width n_ff)
+void swiglu_pair(const float* g, const float* u, uint16_t* h16, int64_t n, int64_t n_ff, void* stream);
 /// dst[i] = src[i] for n int32s, as a kernel: either side may be mapped host memory, and the copy never waits
 /// behind the copy engine's queue (the prompt path's grouping tables, while the expert stream fills it).
 void copy_i32(int32_t* dst, const int32_t* src, int64_t n, void* stream);
@@ -65,9 +88,9 @@ void copy_i32(int32_t* dst, const int32_t* src, int64_t n, void* stream);
 void copy_f32_wide(float* dst, const float* src, int64_t n, void* stream);
 /// Gather rows: dst16[i, :] = x16[src[i], :] (n rows of `width` BF16).
 void gather_rows16(const uint16_t* x16, const int32_t* src, uint16_t* dst16, int64_t n, int64_t width, void* stream);
-/// bo[t, :] = shared[t, :] * sigmoid(sg[t]) + sum_k w[t, k] * D[slot[t, k], :]
+/// bo[t, :] = shared[t, :] * sigmoid(sg[t]) + sum_j w[t, j] * D[slot[t, j], :] over j < k, rows of n
 void moe_combine(const float* D, const int32_t* slot, const float* w, const float* shared, const float* sg, float* bo,
-                 int64_t T, void* stream);
+                 int64_t T, int64_t n, int64_t k, void* stream);
 
 // ---- QSA helpers
 /// In place: x[r, :] = x[r, :] * rsqrt(mean x^2 + eps) * w  over rows of `cols` (row stride `ld`).
@@ -76,10 +99,10 @@ void rms_rows(float* x, const float* w, int64_t rows, int64_t cols, int64_t ld, 
 /// scaling (rope_scaling.hpp) rides in as the process config - none is today's arithmetic exactly.
 void rope(float* x, int64_t T, int64_t heads, int64_t dim, int64_t ld, int64_t pos0,
           const strata::kernels::RopeScaling& scaling, void* stream);
-/// q_full [T, 24, 512] (q | gate per head) -> q [T, 24, 256]
-void split_q(const float* q_full, float* q, int64_t T, void* stream);
+/// q_full [T, n_head, 512] (q | gate per head) -> q [T, n_head, 256]
+void split_q(const float* q_full, float* q, int64_t T, int64_t n_head, void* stream);
 /// attn[t, h, d] *= sigmoid(q_full[t, h, 256 + d]) -> out16 (fp16 bits: the o-projection is quantized)
-void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t T, void* stream);
+void gate_attn(const float* attn, const float* q_full, uint16_t* out16, int64_t T, int64_t n_head, void* stream);
 
 /// K and V of T consecutive cells (positions pos0..pos0+T-1; K normed and rotated) into the paged pools: FP16
 /// (`k_pool`/`v_pool`) or INT8 codes + FP16 scale per 64 (`k_q`...), the decode append's arithmetic.

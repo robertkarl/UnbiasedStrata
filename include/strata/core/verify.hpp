@@ -42,6 +42,13 @@ namespace strata::core {
 class NativeHead;
 class RemoteExpertOpt;
 
+/// The geometry a verify window reproduces: at hc > 1 the fused hyper-connection read's shape (Flash-Next's
+/// 2560 / 4 / 320), at hc = 1 the plain block (any width: layer.hpp, "the plain block"); `k` equal to the file's
+/// `expert_used_count` (the window routes and combines with the session's k, and top-10 on a file that routes
+/// top-8 is a different model, finite and fluent); GDN state 128 and conv 4 (the T-token GDN kernels' shapes).
+/// False with `why` naming the number that differs.  `Verifier::init` refuses on it; tests call it directly.
+bool verify_geometry_supported(const ModelGeometry& g, int64_t k, std::string& why);
+
 /// The CPU pool for a window: x_f (n_tok, n_embd), ids (n_tok, k) -> out (n_tok * k, n_embd), hit rows zeroed.
 using PoolMultiFn = void (*)(void* user, const float* x_f, const int32_t* ids, int64_t n_tok, int64_t k, float* out,
                              int64_t layer);

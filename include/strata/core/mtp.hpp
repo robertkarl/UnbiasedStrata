@@ -26,6 +26,7 @@
 #include <cuda_runtime.h>
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -93,6 +94,37 @@ public:
     const float* tensor_f32(const char* name) const { return f32(name); }
     const uint16_t* tensor_bf16(const char* name) const { return bf16(name); }
     const void* tensor_q8(const char* name) const { return q8(name); }
+    /// A projection of the pack in its GGUF form (Qwen3.6's pack keeps every projection as stored: `nextn.eh_proj.weight`,
+    /// `attn_k.weight`, ...): its blocks and ggml type (`*type`), null when the name is not a native projection.
+    const void* tensor_native(const char* name, int* type) const;
+
+    // ---- QWEN3.6 (qwen35moe; docs/qwen36-port/step4-drafter.md).  The drafter is the -MTP file's nextn block through
+    // the plain graph: concat(rms_norm(embed(tok)) * enorm, rms_norm(h) * hnorm) (embedding first), eh_proj, one plain
+    // attention + MoE block over the drafter's own dense KV, shared_head_norm, the main head.  `h` is the trunk's
+    // OUTPUT-NORMED hidden state (llama.cpp's h_nextn): the drafter applies `output_norm` to the residual rows it is
+    // handed, so the caller passes the same final residual it passes for Flash-Next.  Pairing: token k with the hidden
+    // state of position k-1 (common/speculative.cpp), the cell convention `prefill` / `draft` already use.  The second
+    // path is chosen by the geometry's architecture; the Flash-Next path is unchanged.
+    bool qwen36() const;
+    /// The harness's one-row forward, outside any graph: the row's seams by llama.cpp's cb() names (`mtp_tok_embd`,
+    /// `mtp_enorm`, `mtp_hnorm`, `mtp_concat`, `mtp_eh_proj`, `mtp_attn_norm`, `mtp_Vcur`, `mtp_Kcur_normed` (before
+    /// RoPE), `mtp_Qcur_full`, `mtp_Qcur_normed` (before RoPE), `mtp_attn_pregate`, `mtp_attn_out`, `mtp_attn_residual`,
+    /// `mtp_attn_post_norm`, `ffn_moe_logits`, `ffn_moe_topk` (int32 ids behind the float pointer), `ffn_moe_weights_norm`,
+    /// `mtp_ffn_shexp_gated`, `mtp_ffn_out`, `mtp_post_ffn`, `mtp_shared_head_norm`, `result_output`), each handed to
+    /// `seam` after a stream sync with the device pointer and the element count; `top1` gets the draft (a vocabulary
+    /// id).  `R_row` is the trunk's final residual (device), the K/V is written at `cell`, RoPE at `pos`.  The rival
+    /// readings of `DebugOpts` are the harness's negative controls and nothing else sets them.
+    struct DebugOpts {
+        bool hidden_first = false;   ///< concat(hnorm, enorm): the wrong order
+        bool skip_hnorm = false;     ///< the hidden state's second norm (hnorm) left out
+    };
+    using SeamFn = std::function<void(const char* seam, const float* dev, int64_t n)>;
+    bool debug_row(const float* R_row, int32_t token, int64_t cell, int32_t pos, const DebugOpts& o, const SeamFn& seam,
+                   int32_t* top1, std::string& err);
+    /// The draft block's expert blob (Qwen3.6): the native layout's types and bytes, for a reader of `experts.bin`.
+    int expert_gu_type() const { return exp_gu_type_; }
+    int expert_d_type() const { return exp_d_type_; }
+    int64_t expert_blob_bytes() const { return exp_blob_; }
     QsaState& kv_state_rw() { return st_; }
     int64_t first_needed() const { return (window_ > 0 && prompt_len_ > 0) ? prompt_len_ - window_ - 64 : 0; }
     int device() const { return device_; }
@@ -103,6 +135,14 @@ public:
 
 private:
     bool record_forward(int T, int step_row0, cudaStream_t cs, std::string& err);
+    bool record_forward_qwen36(int T, int step_row0, cudaStream_t cs, std::string& err);
+    bool load_qwen36_experts(const std::string& rt_dir, const ModelGeometry& g, uint64_t& bytes, std::string& err);
+    bool check_qwen36_pack(const std::string& rt_dir, const ModelGeometry& g, std::string& err);
+    int exp_gu_type_ = -1, exp_d_type_ = -1;   ///< Qwen3.6: the draft experts' GGUF types (native_expert_layout)
+    int64_t exp_blob_ = 0;                     ///< Qwen3.6: bytes per expert blob in experts_
+    float* cat_ = nullptr;                     ///< Qwen3.6: concat(enorm, hnorm), T x 2 n_embd
+    const DebugOpts* dbg_ = nullptr;           ///< set by debug_row only
+    const SeamFn* seam_ = nullptr;             ///< set by debug_row only
     bool capture_prefill(int T, std::string& err);
     bool capture_prefill_dev(int T, std::string& err);   ///< E-4: without the mapped staging (inputs copied on device)
     bool capture_round(int T, bool coupled, std::string& err);
@@ -141,7 +181,7 @@ private:
     int64_t pf_cap_ = 0;          ///< its capacity in ints
     cudaGraphExec_t round_exec_[9] = {};
 
-    struct Tensor { std::string name, kind; int64_t rows = 0, cols = 0; uint64_t off = 0, bytes = 0; };
+    struct Tensor { std::string name, kind; int64_t rows = 0, cols = 0; uint64_t off = 0, bytes = 0; int type = -1; };
     std::vector<Tensor> tensors_;
     uint8_t* dense_ = nullptr;
     uint8_t* experts_ = nullptr;

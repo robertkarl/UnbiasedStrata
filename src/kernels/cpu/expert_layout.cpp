@@ -230,12 +230,19 @@ void native_gu_rows(const NativeFmt&, const uint8_t*, const void* const*, int, f
 void native_down_rows(const NativeFmt&, const uint8_t*, const void* const*, int, float* const*, int, int) { std::abort(); }
 #endif
 
-bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err) {
+bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int64_t n_embd, int64_t n_ff,
+                        std::string& err) {
     ExpertLayout L;
     L.n_layers = n_layers;
     L.n_expert = n_expert;
     std::ifstream in(pack_dir + "/native_experts.txt");
     if (!in) {
+        if (n_embd != H || n_ff != FF) {
+            err = "the pack has no native_experts.txt, so its experts.bin is in the canonical Q2_0 form, which bakes " +
+                  std::to_string(H) + " x " + std::to_string(FF) + " (strata/kernels/cpu/expert.hpp); the model is " +
+                  std::to_string(n_embd) + " x " + std::to_string(n_ff) + ": pack it with tools/iq_pack.py (native experts)";
+            return false;
+        }
         L.total = (uint64_t) n_layers * (uint64_t) n_expert * (uint64_t) BLOB;
         g_layout = L;
         return true;
@@ -281,10 +288,11 @@ bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n
             return false;
         }
         NativeFmt f;
-        if (!native_fmt((int) gt, (int) dt, H, FF, f, err)) return false;
+        if (!native_fmt((int) gt, (int) dt, n_embd, n_ff, f, err)) return false;
         if (f.bytes != blob) {
             err = "native_experts.txt: layer " + std::to_string(l) + " blob is " + std::to_string(blob) +
-                  " B but its formats make " + std::to_string(f.bytes);
+                  " B but its formats make " + std::to_string(f.bytes) + " at n_embd " + std::to_string(n_embd) +
+                  " x n_ff " + std::to_string(n_ff) + " (the model file's geometry): the pack is of another model";
             return false;
         }
         if (ss >> go >> uo >> dox) {   // v2 lines: the GGUF offsets

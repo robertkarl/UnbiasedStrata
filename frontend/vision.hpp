@@ -74,7 +74,17 @@ public:
         auto key = gg ? gguf_find_key(gg.get(), "clip.vision.projection_dim") : -1;
         if (key < 0) throw std::runtime_error("vision encoder has no projection_dim");
         width_ = (int) gguf_get_val_u32(gg.get(), key);
-        if (width_ != 2560) throw std::runtime_error("vision projector does not match Flash-Next's 2560 embedding width");
+        // the projector must produce rows of the model's own width (2560 for Flash-Next, 2048 for Qwen3.6-35B-A3B);
+        // the tokenizer-only model the front end holds has no hparams, so the width is read from its metadata
+        char arch[64] = {0}, val[32] = {0};
+        int want = 0;
+        if (llama_model_meta_val_str(model, "general.architecture", arch, sizeof arch) > 0 &&
+            llama_model_meta_val_str(model, (std::string(arch) + ".embedding_length").c_str(), val, sizeof val) > 0)
+            want = std::atoi(val);
+        if (want <= 0) throw std::runtime_error("cannot read the model's embedding width");
+        if (width_ != want)
+            throw std::runtime_error("vision projector width " + std::to_string(width_) +
+                                     " does not match the model's embedding width " + std::to_string(want));
         max_tokens_ = max_tokens;
         auto cp = mtmd_context_params_default();
         cp.use_gpu = false; cp.print_timings = false; cp.warmup = false;

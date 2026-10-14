@@ -277,6 +277,10 @@ uint64_t qsa_state_bytes(const ModelGeometry& g, int64_t max_cells, bool with_ro
 /// resident state).
 void qsa_set_kv_resident(int64_t cells);
 int64_t qsa_kv_resident();
+/// Whether KV streaming applies to this geometry.  Dense attention (Qwen3.6, no indexer) reads every cell every
+/// token, so streaming would copy the whole KV over PCIe per token: false, with `why` for the CLI's refusal.
+/// `qsa_state_init` refuses the same way as a backstop.
+bool qsa_kv_streaming_applies(const ModelGeometry& g, std::string& why);
 /// The fewest resident cells a streamed layer may have: one verify window's selections (8 queries x 2,051 cells
 /// in whole blocks) must fit at once, with room to spare.
 int64_t qsa_kv_resident_min();
@@ -479,7 +483,34 @@ void layer_set_fast_select(bool enabled);
 /// Plan v0.3 P6: whether the current decode configuration is the one the speculative verify window reproduces
 /// bit for bit (native projections, fused GR and GDN, split-K attention, block selection, native indexer).
 bool layer_verify_compatible(std::string& why);
+/// The same for a model's geometry: at `hc = 1` (Qwen3.6) there is no hyper-connection read to fuse and, without an
+/// indexer, no block selection and no native indexer to require.  The no-geometry form above is Flash-Next's.
+bool layer_verify_compatible(const ModelGeometry& g, std::string& why);
 uint64_t block_buffers_init(const ModelGeometry& g, void* base, BlockBuffers& b);
+
+// ================================ THE PLAIN BLOCK (hc = 1, Qwen3.6) ================================
+//
+// `hc = 1` (`ModelGeometry::hc`, set by the architecture string: docs/QWEN36-35B-A3B.md section 3.5) means NO
+// hyper-connections: `R` is one n_embd stream and the block is llama.cpp's `qwen35moe` pre-norm residual block
+//
+//     x = rms_norm(R) * attn_norm            -> mixer -> R += out
+//     x = rms_norm(R) * post_attention_norm  -> MoE   -> R += out          head: rms_norm(R) * output_norm -> output
+//
+// **IT IS A SECOND PATH CHOSEN BY `hc`, NOT THE GR PATH AT hc = 1.**  `gr_read` on one stream is not a plain norm
+// (its bottleneck gates the normed stream with a sigmoid and its norm weight is stored as `1 + w`), so the GR
+// kernels are never entered for this model; `block_layer_pre`, `block_layer_post`, `lm_head_mix` and the verify
+// window each branch on `g.hc == 1` to the two helpers below.  There is no pending write either: the residual is
+// added where the reference adds it, so `R` never lags between halves.
+//
+// The two helpers take a ROW COUNT so the verify window (T rows) and the single-token path (1 row) call the same
+// kernels: row t of the T-row call is bitwise the one-row call (the norm has independent per-row statistics in a
+// fixed reduction order; the add is elementwise).  tests/cuda/qwen36_block_test.cpp asserts that.
+
+/// `mixed[t] = rms_norm(R[t], eps) * w` over n_embd, for `n_tok` rows at stride n_embd (`w` is the F32 norm weight,
+/// n_embd long; ggml's `rms_norm` then `mul`).  `mixed` may equal `R` (in place) or must be disjoint.
+void plain_norm_rows(const float* R, const float* w, float* mixed, int64_t n_embd, float eps, int n_tok, void* stream);
+/// `R[t] += block_out[t]` over n_embd, for `n_tok` rows at stride n_embd.
+void plain_residual_rows(float* R, const float* block_out, int64_t n_embd, int n_tok, void* stream);
 
 // ================================ THE TWO ENDS OF A TOKEN ================================
 

@@ -16,46 +16,88 @@
 #pragma once
 
 #include "strata/core/weights.hpp"
+#include "strata/kernels/gdn.hpp"
 
 #include <cstdint>
 #include <string>
 
 namespace strata::core {
 
-/// The model's geometry, taken from `docs/semantics.md` and the artifact's own metadata.  Every field here
-/// is a number a kernel depends on, so a change is a change to a kernel contract and not a tuning knob.
+/// Which architecture the model file declares.  The engine was written for ONE model (Qwen3.8-Flash-Next,
+/// `qwen4exp`); Qwen3.6-35B-A3B (`qwen35moe`) is the same family one generation earlier with the hyper-connection
+/// residual, the sparse-attention indexer and the PLE table removed.  The string decides what the file cannot say:
+/// `hc`, the indexer and the PLE (docs/QWEN36-35B-A3B.md section 3.8).
+enum class ModelArch { Qwen4Exp, Qwen35Moe };
+
+inline const char* model_arch_name(ModelArch a) { return a == ModelArch::Qwen4Exp ? "qwen4exp" : "qwen35moe"; }
+
+/// The model's geometry.  Every field here is a number a kernel depends on, so a change is a change to a kernel
+/// contract and not a tuning knob.  The defaults are Qwen3.8-Flash-Next's (`docs/semantics.md`); a model file
+/// overrides every one of them through `read_model_geometry` (strata/core/model_geometry.hpp), which reads the
+/// `<arch>.*` keys of the GGUF and derives the dependent members below with `derive()`.
 struct ModelGeometry {
+    ModelArch arch = ModelArch::Qwen4Exp;
+
     int64_t n_embd = 2560;
-    int64_t n_layers = 48;
-    int64_t qsa_interval = 4;      ///< every 4th layer is full attention: layers 3, 7, ... 47
+    int64_t n_layers = 48;         ///< trunk layers: `block_count` minus the draft (`nextn_predict_layers`) blocks
+    int64_t nextn_layers = 0;      ///< MTP draft blocks at the end of the file (0 when the key is absent)
+    int64_t qsa_interval = 4;      ///< every 4th layer is full attention: layers 3, 7, ... (`full_attention_interval`)
+    int64_t n_vocab = 248320;      ///< rows of `token_embd.weight` (both models share the tokenizer)
 
-    // GDN (36 layers)
-    int64_t ssm_state_size = 128;
-    int64_t ssm_k_heads = 16;
-    int64_t ssm_v_heads = 48;
-    int64_t ssm_d_conv = 4;
-    int64_t ssm_conv_channels = 10240;   ///< 2*128*16 + 128*48
-    int64_t ssm_value_dim = 6144;        ///< 128 * 48
+    // GDN (36 of 48 layers; 30 of 40 for Qwen3.6)
+    int64_t ssm_state_size = 128;        ///< `ssm.state_size`: the head dim of k and v
+    int64_t ssm_k_heads = 16;            ///< `ssm.group_count`
+    int64_t ssm_v_heads = 48;            ///< `ssm.time_step_rank` (32 for Qwen3.6)
+    int64_t ssm_d_conv = 4;              ///< `ssm.conv_kernel`
+    int64_t ssm_conv_channels = 10240;   ///< DERIVED: 2*S*k_heads + S*v_heads (`derive()`); 8192 for Qwen3.6
+    int64_t ssm_value_dim = 6144;        ///< DERIVED: S*v_heads (`ssm.inner_size` in the file); 4096 for Qwen3.6
 
-    // QSA (12 layers)
-    int64_t n_head = 24;
-    int64_t n_head_kv = 2;
-    int64_t head_dim = 256;
-    int64_t idx_q_heads = 4;
-    int64_t idx_key_dim = 128;
+    // full attention (QSA for Flash-Next: with an indexer; dense for Qwen3.6: no indexer)
+    int64_t n_head = 24;                 ///< `attention.head_count` (16 for Qwen3.6)
+    int64_t n_head_kv = 2;               ///< `attention.head_count_kv`
+    int64_t head_dim = 256;              ///< `attention.key_length`
+    int64_t n_rot = 64;                  ///< `rope.dimension_count`: the partial rotary width (0.25 * head_dim)
+    int64_t rope_sections[4] = {11, 11, 10, 0};   ///< `rope.dimension_sections` (IMRoPE), sum == n_rot / 2
+    double rope_base = 1e7;              ///< `rope.freq_base`
+    double rms_eps = 1e-6;               ///< `attention.layer_norm_rms_epsilon`
+    int64_t idx_q_heads = 4;             ///< the QSA indexer's query heads (Flash-Next only; meaningless at hc 1)
+    int64_t idx_key_dim = 128;           ///< the QSA indexer's key width (Flash-Next only)
 
-    // gated residual, on every layer
+    // gated residual, on every layer.  `hc = 1` means NO hyper-connections: a plain residual with `attn_norm`,
+    // `post_attention_norm` and `output_norm` (Qwen3.6).  No key says this; the architecture string does.
     int64_t hc = 4;
     int64_t hc_lr = 320;
 
     // MoE, on every layer
-    int64_t n_expert = 512;
-    int64_t n_ff = 640;
+    int64_t n_expert = 512;              ///< `expert_count` (256 for Qwen3.6)
+    int64_t n_expert_used = 10;          ///< `expert_used_count`, the router's k (8 for Qwen3.6)
+    int64_t n_ff = 640;                  ///< `expert_feed_forward_length` (512 for Qwen3.6)
+    int64_t n_ff_shexp = 640;            ///< `expert_shared_feed_forward_length` (512 for Qwen3.6)
+
+    /// The per-layer token embedding (PLE) and its n-gram table: Flash-Next has one, Qwen3.6 has none.  Decides
+    /// whether `--ple-gguf` is required and whether the session carves the PLE history (strata/core/session.hpp).
+    bool has_ple = true;
 
     int64_t hc_dim() const { return hc * n_embd; }
     /// `layer % qsa_interval == qsa_interval - 1` is full attention.  Derived, not a second list.
     int64_t n_qsa_layers() const { return n_layers / qsa_interval; }
     int64_t n_gdn_layers() const { return n_layers - n_qsa_layers(); }
+    /// Whether the full-attention layers carry the sparse indexer (QSA).  Qwen3.6's attention is dense.
+    bool has_indexer() const { return arch == ModelArch::Qwen4Exp; }
+    /// The GDN output gate: `rms_norm(o) * ssm_norm * act(z)` with act = sigmoid for Flash-Next and SiLU for Qwen3.6
+    /// (geometry-inventory.md row 39; `kernels::GdnGate`).  From the architecture, like `hc` and the indexer: no key
+    /// says it.  Every GDN output kernel takes this value from the layer; none reads a global.
+    kernels::GdnGate gdn_gate() const {
+        return arch == ModelArch::Qwen35Moe ? kernels::GdnGate::Silu : kernels::GdnGate::Sigmoid;
+    }
+
+    /// The members that follow from others: conv channels `2*S*k_heads + S*v_heads` and the value dim
+    /// `S*v_heads`.  They are stored (the kernels read them as plain members) and derived here, so a file that
+    /// changes `ssm_v_heads` cannot leave them at the defaults (geometry-inventory.md row 2).
+    void derive() {
+        ssm_value_dim = ssm_state_size * ssm_v_heads;
+        ssm_conv_channels = 2 * ssm_state_size * ssm_k_heads + ssm_value_dim;
+    }
 };
 
 /// True for the full-attention layers.  `docs/semantics.md` gives this twice over - `full_attention_interval

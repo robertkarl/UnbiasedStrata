@@ -56,7 +56,8 @@ constexpr int WLD = 80;                 // bytes per decoded weight row of a sta
 __host__ __device__ constexpr int tile_rows(int ww) { return 256 / ww; }
 __host__ __device__ constexpr int weight_rows(int ww) { return 64 * ww; }
 constexpr int ASTAGES = 4;              // cp.async depth of the activations (64 values of K a stage)
-constexpr int GU_ROWS_K = 2560, D_ROWS_K = 640;   // K of gate/up (n_embd) and of down (n_ff)
+// K of gate/up (n_embd) and of down (n_ff) are the layer's (NativeGeom): 2560 / 640 for Flash-Next, 2048 / 512 for
+// Qwen3.6.  They set the stage count and the weight-row blocks per tile, loop bounds rather than unrolled constants.
 
 // the formats (ggml type ids)
 constexpr int T_IQ2_XXS = GGML_TYPE_IQ2_XXS, T_IQ2_XS = GGML_TYPE_IQ2_XS, T_IQ2_S = GGML_TYPE_IQ2_S,
@@ -294,9 +295,11 @@ native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
     constexpr int TR = tile_rows(WW), WR = weight_rows(WW);
     constexpr int WT_BYTES = WR * WLD, WS_FLOATS = WR * 4, ACT_STAGE = TR * AB;
-    constexpr int NS = (GU ? GU_ROWS_K : D_ROWS_K) / 64;   // 64-value stages along K
-    constexpr int NFB = (GU ? 1280 : 2560) / WR;          // weight-row blocks per tile
-    constexpr int ACT_LD = NS * AB;                       // bytes per activation row: 3200 (a token), 800 (a row's H)
+    const int n_embd = (int) geo.n_embd, n_ff = (int) geo.n_ff;
+    const int NS = (GU ? n_embd : n_ff) / 64;             // 64-value stages along K
+    const int NFB = (GU ? 2 * n_ff : n_embd) / WR;        // weight-row blocks per tile
+    const int ACT_LD = NS * AB;                           // bytes per activation row: n_embd / 64 * 80 (a token), n_ff / 64 * 80 (a row's H)
+    const int H_BLOCKS = n_ff / 64;                       // 64-value blocks of a row's H
     constexpr int BS = block_bytes(WT);
     constexpr bool K16 = per16(WT);
     extern __shared__ __align__(16) uint8_t smem[];
@@ -349,7 +352,7 @@ native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_
         // slice at once (180 or 360 bytes a row)
         constexpr int PF = 2;
         auto prefetch_sb = [&](int sb) {
-            if (dec && sb < GU_ROWS_K / 256) pf_l2(wrow + sb * BS + (uj ? BS - 1 : 0));
+            if (dec && sb < n_embd / 256) pf_l2(wrow + sb * BS + (uj ? BS - 1 : 0));
         };
         if (GU) {
 #pragma unroll
@@ -481,7 +484,7 @@ native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_
                     const float inv = am > 0.0f ? 127.0f / am : 0.0f;
                     const int r = nb0 + 8 * n + 2 * tig + c;
                     if (r < nrows) {
-                        uint8_t* o = out + (size_t) (row0 + r) * (10 * AB) + (blk >> 1) * AB;
+                        uint8_t* o = out + (size_t) (row0 + r) * (H_BLOCKS * AB) + (blk >> 1) * AB;
                         const int hh = blk & 1;
 #pragma unroll
                         for (int i = 0; i < 4; ++i) o[32 * hh + 8 * i + g] = (uint8_t) (int8_t) __float2int_rn(h[i] * inv);
@@ -498,7 +501,7 @@ native_kernel(const Batch b, const NativeGeom geo, const Tables tb, const uint8_
 #pragma unroll
                     for (int q = 0; q < 4; ++q) {
                         const int r = nb0 + 8 * n + 2 * tig + (q & 1);
-                        if (r < nrows) dm[(size_t) (row0 + r) * 2560 + rbase + 64 * wf + 16 * i + 8 * (q >> 1) + g] = acc[i][n][q];
+                        if (r < nrows) dm[(size_t) (row0 + r) * n_embd + rbase + 64 * wf + 16 * i + 8 * (q >> 1) + g] = acc[i][n][q];
                     }
                 }
         }
@@ -620,8 +623,13 @@ void experts_native(const Batch& b, const NativeGeom& g, int n_expert, int64_t n
     // the most 64-row tiles the batch can have (every row in it, plus a partial tile per expert) - the items of the
     // ones inside a larger item end at once
     const int64_t tiles = (n + kTileRows - 1) / kTileRows + (b.e1 - b.e0);
-    const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (1280 / weight_rows(ww)), (int64_t) d.sms * d.occ);
-    const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (2560 / weight_rows(ww)), (int64_t) d.sms * d.occ);
+    if (g.n_embd % 256 != 0 || g.n_ff % 64 != 0 || (2 * g.n_ff) % weight_rows(ww) != 0 || g.n_embd % weight_rows(ww) != 0) {
+        std::fprintf(stderr, "prefill fused experts (native): n_embd %lld / n_ff %lld do not tile (n_embd a multiple of 256, "
+                             "2 n_ff and n_embd multiples of %d)\n", (long long) g.n_embd, (long long) g.n_ff, weight_rows(ww));
+        std::exit(1);
+    }
+    const unsigned g_gu = (unsigned) std::min<int64_t>(tiles * (2 * g.n_ff / weight_rows(ww)), (int64_t) d.sms * d.occ);
+    const unsigned g_d = (unsigned) std::min<int64_t>(tiles * (g.n_embd / weight_rows(ww)), (int64_t) d.sms * d.occ);
     switch (g.gu_type) {
         case T_IQ2_XXS: launch<T_IQ2_XXS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;
         case T_IQ2_XS: launch<T_IQ2_XS, true>(ww, g_gu, b, g, tb, xa, src, ha, nullptr, s); break;

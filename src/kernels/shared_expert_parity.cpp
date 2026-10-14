@@ -15,10 +15,13 @@
 //      readings are a per-dimension elementwise gate and a per-expert gate.  The elementwise reading is
 //      checked the same way - it is computed and required to differ.
 #include "strata/kernels/bf16_bits.hpp"
+#include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/f16_bits.hpp"
 #include "strata/kernels/quantize_act.hpp"
 #include "strata/kernels/s_gemv.hpp"
+#include "strata/kernels/native_mmvq.hpp"
 #include "strata/kernels/shared_expert.hpp"
+#include "strata/kernels/verify_kernels.hpp"
 
 #include <cuda_runtime.h>
 
@@ -400,6 +403,194 @@ int main(int argc, char** argv) {
         std::printf("  restored shared default: %s\n", restored ? "byte-identical" : "FAIL");
         if (!restored) ++bad;
         cudaFree(d_witness);
+    }
+
+    // ================= Qwen3.6: the shared expert at 2048 x 512, Q8_0 on the native path, the 1-D BF16 gate =================
+    //
+    // Qwen3.6-35B-A3B's shared expert is 512 wide (docs/QWEN36-35B-A3B.md 3.4): `n_ff % 256 == 0`, so the Q8_K
+    // activation rule the 640-wide Flash-Next expert could not meet is met (geometry-inventory.md row 127), and the
+    // real file serves it through the NATIVE projections (ggml types, `native_mmvq`, Q8_1 activations) rather than the
+    // canonical S-forms above.  Its scalar gate `ffn_gate_inp_shexp` is F32 in the file and the engine reads it as
+    // BF16 (the pack rounds it under --compat-bf16): the reference below dots the F32 activation with the
+    // BF16-rounded weight, as the native BF16 MMVF does, and REPORTS what the rounding moved against the unrounded
+    // F32 gate (a number for the step-4 --compat-bf16 decision, not an assertion).
+    //
+    // The host reference is written from the block layouts, not from the kernels: Q8_0 weights (gguf-py's
+    // quantizer: integers from the F32 scale amax/127, the scale stored as fp16), Q8_1 activations (ggml-cuda
+    // quantize_q8_1: integers from the F32 scale, fp16 scale in the dot), silu(gate) * up in F32, the intermediate
+    // re-quantized to Q8_1 for the down projection, times sigmoid(x . bf16(w)).
+    {
+        using namespace strata::kernels;
+        const int n_embd2 = 2048, n_ff2 = 512;
+        std::mt19937 rq(4242);
+        std::normal_distribution<float> gq(0.0f, 1.0f);
+        std::printf("\n== Qwen3.6 shared expert: %d x %d, Q8_0 native projections, BF16 scalar gate\n", n_embd2, n_ff2);
+
+        // ---- Q8_0 rows (34 B per 32 elements: fp16 d, 32 int8), from F32 values; returns the dequantized value too
+        auto q8_0_rows = [&](int rows, int cols, float gain, std::vector<uint8_t>& bytes, std::vector<float>& deq) {
+            bytes.assign((size_t) rows * (cols / 32) * 34, 0);
+            deq.assign((size_t) rows * cols, 0.0f);
+            for (int r = 0; r < rows; ++r)
+                for (int b = 0; b < cols / 32; ++b) {
+                    float v[32], amax = 0.0f;
+                    for (int i = 0; i < 32; ++i) { v[i] = gq(rq) * gain; amax = std::fmax(amax, std::fabs(v[i])); }
+                    const float d = amax / 127.0f;
+                    const float id = d != 0.0f ? 1.0f / d : 0.0f;
+                    const uint16_t d16 = f16_from_f32(d);
+                    uint8_t* blk = bytes.data() + ((size_t) r * (cols / 32) + b) * 34;
+                    std::memcpy(blk, &d16, 2);
+                    for (int i = 0; i < 32; ++i) {
+                        const int q = (int) std::nearbyint(v[i] * id);
+                        ((int8_t*) (blk + 2))[i] = (int8_t) q;
+                        deq[(size_t) r * cols + b * 32 + i] = (float) q * f32_from_f16(d16);
+                    }
+                }
+        };
+        std::vector<uint8_t> gb, ub, db;
+        std::vector<float> gw, uw, dw;
+        q8_0_rows(n_ff2, n_embd2, 1.0f / std::sqrt((float) n_embd2) * 2.0f, gb, gw);
+        q8_0_rows(n_ff2, n_embd2, 1.0f / std::sqrt((float) n_embd2) * 2.0f, ub, uw);
+        q8_0_rows(n_embd2, n_ff2, 1.0f / std::sqrt((float) n_ff2), db, dw);
+        std::vector<float> x2((size_t) n_embd2);
+        for (auto& v : x2) v = gq(rq);
+        // the gate weight: F32, drawn so the dot sits around -1 (sigmoid 0.27), where skipping the gate is loud
+        std::vector<float> ginp32((size_t) n_embd2);
+        for (auto& v : ginp32) v = gq(rq) * 0.03f;
+        {
+            double dot = 0, xx = 0;
+            for (int i = 0; i < n_embd2; ++i) { dot += (double) x2[(size_t) i] * ginp32[(size_t) i]; xx += (double) x2[(size_t) i] * x2[(size_t) i]; }
+            const float shift = (float) ((-1.0 - dot) / xx);                 // w += shift * x moves the dot to -1
+            for (int i = 0; i < n_embd2; ++i) ginp32[(size_t) i] += shift * x2[(size_t) i];
+        }
+        std::vector<uint16_t> ginp_bf((size_t) n_embd2);
+        for (int i = 0; i < n_embd2; ++i) ginp_bf[(size_t) i] = bf16_from_f32(ginp32[(size_t) i]);
+
+        // ---- the Q8_1 image of an F32 row (values only: integers from the F32 scale, the fp16 scale in the product)
+        auto q8_1_values = [](const std::vector<float>& x) {
+            std::vector<float> out(x.size());
+            for (size_t b = 0; b < x.size() / 32; ++b) {
+                float amax = 0.0f;
+                for (int i = 0; i < 32; ++i) amax = std::fmax(amax, std::fabs(x[b * 32 + i]));
+                const float d = amax / 127.0f;
+                const float d16 = f32_from_f16(f16_from_f32(d));
+                for (int i = 0; i < 32; ++i) {
+                    const int q = amax == 0.0f ? 0 : (int) std::nearbyint(x[b * 32 + i] / d);
+                    out[b * 32 + i] = (float) q * d16;
+                }
+            }
+            return out;
+        };
+        auto reference2 = [&](bool silu_on_up, bool gate_skipped, bool gate_f32) {
+            const std::vector<float> xq = q8_1_values(x2);
+            std::vector<float> gp((size_t) n_ff2), up((size_t) n_ff2), h((size_t) n_ff2);
+            for (int r = 0; r < n_ff2; ++r) {
+                double a = 0, b = 0;
+                for (int i = 0; i < n_embd2; ++i) {
+                    a += (double) xq[(size_t) i] * gw[(size_t) r * n_embd2 + i];
+                    b += (double) xq[(size_t) i] * uw[(size_t) r * n_embd2 + i];
+                }
+                gp[(size_t) r] = (float) a; up[(size_t) r] = (float) b;
+            }
+            for (int r = 0; r < n_ff2; ++r) {
+                const float g = silu_on_up ? up[(size_t) r] : gp[(size_t) r];
+                const float o = silu_on_up ? gp[(size_t) r] : up[(size_t) r];
+                h[(size_t) r] = (g / (1.0f + std::exp(-g))) * o;
+            }
+            const std::vector<float> hq = q8_1_values(h);
+            std::vector<float> out((size_t) n_embd2);
+            double dot = 0;
+            for (int i = 0; i < n_embd2; ++i)
+                dot += (double) x2[(size_t) i] * (gate_f32 ? (double) ginp32[(size_t) i] : (double) f32_from_bf16(ginp_bf[(size_t) i]));
+            const double sg = gate_skipped ? 1.0 : 1.0 / (1.0 + std::exp(-dot));
+            for (int o = 0; o < n_embd2; ++o) {
+                double a = 0;
+                for (int r = 0; r < n_ff2; ++r) a += (double) hq[(size_t) r] * dw[(size_t) o * n_ff2 + r];
+                out[(size_t) o] = (float) (a * sg);
+            }
+            return out;
+        };
+        const std::vector<float> want2 = reference2(false, false, false);
+        {
+            const double r_silu = rel_l1(want2, reference2(true, false, false));
+            const double r_gate = rel_l1(want2, reference2(false, true, false));
+            std::printf("  %-56s %-4s (%.2f%% apart)\n", "silu-on-gate vs silu-on-up is observable at 512",
+                        r_silu > 0.05 ? "yes" : "*** NO ***", r_silu * 100);
+            if (!(r_silu > 0.05)) ++bad;
+            std::printf("  %-56s %-4s (%.2f%% apart)\n", "the scalar gate skipped is observable",
+                        r_gate > 0.05 ? "yes" : "*** NO ***", r_gate * 100);
+            if (!(r_gate > 0.05)) ++bad;
+            const double r_bf16 = rel_l1(reference2(false, false, true), want2);
+            std::printf("  %-56s rel %.3e (measured, not asserted: the --compat-bf16 rounding of the gate)\n",
+                        "F32 gate weight vs its BF16 rounding, on the output", r_bf16);
+        }
+
+        // ---- the kernel: all three projections native, the native BF16 gate, per the layer's call in moe_shared
+        uint8_t *d_gb = nullptr, *d_ub = nullptr, *d_db = nullptr, *d_q81 = nullptr;
+        float *d_x2 = nullptr, *d_out2 = nullptr, *d_scr2 = nullptr;
+        uint16_t *d_ginp2 = nullptr, *d_xb2 = nullptr;
+        check(cudaMalloc(&d_gb, gb.size()), "gb"); check(cudaMemcpy(d_gb, gb.data(), gb.size(), cudaMemcpyHostToDevice), "gb");
+        check(cudaMalloc(&d_ub, ub.size()), "ub"); check(cudaMemcpy(d_ub, ub.data(), ub.size(), cudaMemcpyHostToDevice), "ub");
+        check(cudaMalloc(&d_db, db.size()), "db"); check(cudaMemcpy(d_db, db.data(), db.size(), cudaMemcpyHostToDevice), "db");
+        check(cudaMalloc(&d_x2, x2.size() * 4), "x2"); check(cudaMemcpy(d_x2, x2.data(), x2.size() * 4, cudaMemcpyHostToDevice), "x2");
+        check(cudaMalloc(&d_ginp2, ginp_bf.size() * 2), "ginp2");
+        check(cudaMemcpy(d_ginp2, ginp_bf.data(), ginp_bf.size() * 2, cudaMemcpyHostToDevice), "ginp2");
+        check(cudaMalloc(&d_xb2, (size_t) n_embd2 * 2), "xb2");
+        check(cudaMalloc(&d_out2, (size_t) n_embd2 * 4), "out2");
+        check(cudaMalloc(&d_scr2, shared_expert_scratch_bytes(n_ff2)), "scr2");
+        check(cudaMalloc(&d_q81, native_q8_1_bytes(n_embd2, kVerifyMaxT)), "q81");
+        cudaStream_t cs2 = nullptr;
+        check(cudaStreamCreate(&cs2), "cs2");
+        f32_to_bf16_bulk(d_x2, d_xb2, n_embd2, cs2);
+        NativeSharedWeights nw2;
+        nw2.gate_type = 8; nw2.gate_data = d_gb;      // GGML_TYPE_Q8_0 = 8
+        nw2.up_type = 8; nw2.up_data = d_ub;
+        nw2.down_type = 8; nw2.down_data = d_db;
+        nw2.q8_1 = d_q81;
+        shared_expert_set_native_bf16(true);
+        shared_expert(nullptr, nullptr, d_xb2, f, nullptr, nullptr, nullptr, f, nullptr, nullptr, nullptr, f, nullptr, nullptr,
+                      nullptr, d_ginp2, d_scr2, d_out2, n_embd2, n_ff2, tpr, cs2, d_x2, &nw2);
+        check(cudaStreamSynchronize(cs2), "shexp 512");
+        std::vector<float> got2((size_t) n_embd2);
+        check(cudaMemcpy(got2.data(), d_out2, got2.size() * 4, cudaMemcpyDeviceToHost), "got2");
+        long long nonfinite2 = 0;
+        for (float v : got2) nonfinite2 += !std::isfinite(v);
+        const double rel2 = rel_l1(want2, got2);
+        std::printf("  %-56s rel %.3e over %d outputs%s\n", "shared_expert (native Q8_0, BF16 gate) vs reference", rel2,
+                    n_embd2, nonfinite2 ? "  *** NON-FINITE ***" : "");
+        // Q8_0 x Q8_1 products are exact integers on both sides; what remains is the fp16 scale products' summation
+        // order over 64 blocks and a Q8_1 integer that may round differently in f32 and double at a .5 boundary
+        if (!(rel2 <= 1e-4) || nonfinite2) ++bad;
+        // the verify window's call, 1 and 8 tokens of the same x: bitwise the per-token call per column
+        {
+            float *d_g8 = nullptr, *d_u8 = nullptr, *d_s8 = nullptr, *d_o8 = nullptr, *d_x8 = nullptr;
+            uint16_t* d_xb8 = nullptr;
+            check(cudaMalloc(&d_g8, (size_t) kVerifyMaxT * n_ff2 * 4), "g8");
+            check(cudaMalloc(&d_u8, (size_t) kVerifyMaxT * n_ff2 * 4), "u8");
+            check(cudaMalloc(&d_s8, (size_t) kVerifyMaxT * 4), "s8");
+            check(cudaMalloc(&d_o8, (size_t) kVerifyMaxT * n_embd2 * 4), "o8");
+            check(cudaMalloc(&d_x8, (size_t) kVerifyMaxT * n_embd2 * 4), "x8");
+            check(cudaMalloc(&d_xb8, (size_t) kVerifyMaxT * n_embd2 * 2), "xb8");
+            for (int t = 0; t < kVerifyMaxT; ++t) {
+                check(cudaMemcpy(d_x8 + (size_t) t * n_embd2, x2.data(), x2.size() * 4, cudaMemcpyHostToDevice), "x8");
+            }
+            f32_to_bf16_bulk(d_x8, d_xb8, (int64_t) kVerifyMaxT * n_embd2, cs2);
+            shared_expert_multi(kVerifyMaxT, d_x8, d_xb8, nw2, d_ginp2, d_g8, d_u8, d_s8, d_o8, n_embd2, n_ff2, cs2);
+            check(cudaStreamSynchronize(cs2), "multi 512");
+            std::vector<float> o8((size_t) kVerifyMaxT * n_embd2);
+            check(cudaMemcpy(o8.data(), d_o8, o8.size() * 4, cudaMemcpyDeviceToHost), "o8");
+            double worst8 = 0;
+            for (int t = 0; t < kVerifyMaxT; ++t)
+                worst8 = std::fmax(worst8, rel_l1(got2, std::vector<float>(o8.begin() + (size_t) t * n_embd2,
+                                                                          o8.begin() + (size_t) (t + 1) * n_embd2)));
+            std::printf("  %-56s worst rel %.3e over %d tokens\n", "shared_expert_multi vs per-token shared_expert", worst8,
+                        kVerifyMaxT);
+            if (!(worst8 <= 1e-5)) ++bad;
+            cudaFree(d_g8); cudaFree(d_u8); cudaFree(d_s8); cudaFree(d_o8); cudaFree(d_x8); cudaFree(d_xb8);
+        }
+        shared_expert_set_native_bf16(false);
+        cudaStreamDestroy(cs2);
+        cudaFree(d_gb); cudaFree(d_ub); cudaFree(d_db); cudaFree(d_q81); cudaFree(d_x2); cudaFree(d_out2); cudaFree(d_scr2);
+        cudaFree(d_ginp2); cudaFree(d_xb2);
     }
 
     // ================= moe_combine: the two readings it exists to pin =================

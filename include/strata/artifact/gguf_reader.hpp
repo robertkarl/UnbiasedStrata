@@ -570,8 +570,12 @@ private:
     std::map<std::string, std::pair<size_t, const TensorInfo*>> index_;
 };
 
-// ---- architecture guard (P1.S2). The engine is specialised to ONE model; anything else must be
-// refused with a precise error rather than silently mis-run.
+// ---- architecture guard (P1.S2).  The engine is specialised to ONE family; anything else must be refused
+// with a precise error rather than silently mis-run.  Two architecture strings pass: `qwen4exp` (Qwen3.8-Flash-Next,
+// the model the kernels were written for: its six keys are checked against the compiled-in values) and `qwen35moe`
+// (Qwen3.6-35B-A3B, Phase 2 of docs/PLAN-qwen36-35b-a3b.md: the file is the authority on every size, so its keys
+// are checked for PRESENCE only, and `strata::core::read_model_geometry` reads them).  Passing this guard says the
+// metadata is readable, not that the engine runs the model: the Qwen3.6 start stops at its own gate afterwards.
 struct Qwen4ExpGuard {
     uint32_t block_count = 48, hidden = 2560, experts = 0, experts_used = 0, head_count = 24,
              head_count_kv = 2;   // 0 = presence-only: pruned variants (GSQ-RCO Coder) legitimately ship
@@ -581,26 +585,43 @@ struct Qwen4ExpGuard {
 inline std::string check_architecture(const GgufFile& g, const Qwen4ExpGuard& want = {}) {
     const MetaValue* arch = g.get("general.architecture");
     if (!arch) return "missing general.architecture";
-    if (arch->s != "qwen4exp") return "architecture is '" + arch->s + "', this engine requires 'qwen4exp'";
     struct Req {
         const char* key;
         uint64_t want;
     };
-    const Req reqs[] = {
-        {"qwen4exp.block_count", want.block_count},
-        {"qwen4exp.embedding_length", want.hidden},
-        {"qwen4exp.expert_count", want.experts},
-        {"qwen4exp.expert_used_count", want.experts_used},
-        {"qwen4exp.attention.head_count", want.head_count},
-        {"qwen4exp.attention.head_count_kv", want.head_count_kv},
-    };
-    for (const auto& r : reqs) {
-        const MetaValue* v = g.get(r.key);
-        if (!v) return std::string("missing ") + r.key;
-        if (r.want && v->u != r.want)
-            return std::string(r.key) + " = " + std::to_string(v->u) + ", expected " + std::to_string(r.want);
+    if (arch->s == "qwen4exp") {
+        const Req reqs[] = {
+            {"qwen4exp.block_count", want.block_count},
+            {"qwen4exp.embedding_length", want.hidden},
+            {"qwen4exp.expert_count", want.experts},
+            {"qwen4exp.expert_used_count", want.experts_used},
+            {"qwen4exp.attention.head_count", want.head_count},
+            {"qwen4exp.attention.head_count_kv", want.head_count_kv},
+        };
+        for (const auto& r : reqs) {
+            const MetaValue* v = g.get(r.key);
+            if (!v) return std::string("missing ") + r.key;
+            if (r.want && v->u != r.want)
+                return std::string(r.key) + " = " + std::to_string(v->u) + ", expected " + std::to_string(r.want);
+        }
+        return {}; // empty == ok
     }
-    return {}; // empty == ok
+    if (arch->s == "qwen35moe") {
+        // llama.cpp's qwen35moe loader requires these (src/models/qwen35moe.cpp:4-34, llama-model.cpp:1254-1380);
+        // the engine's geometry reader derives everything else from them
+        static const char* const keys[] = {
+            "qwen35moe.block_count", "qwen35moe.embedding_length", "qwen35moe.expert_count",
+            "qwen35moe.expert_used_count", "qwen35moe.attention.head_count", "qwen35moe.attention.head_count_kv",
+            "qwen35moe.attention.key_length", "qwen35moe.full_attention_interval", "qwen35moe.ssm.conv_kernel",
+            "qwen35moe.ssm.state_size", "qwen35moe.ssm.group_count", "qwen35moe.ssm.time_step_rank",
+            "qwen35moe.ssm.inner_size", "qwen35moe.expert_feed_forward_length",
+        };
+        for (const char* k : keys)
+            if (!g.get(k)) return std::string("missing ") + k + " (a qwen35moe file llama.cpp's own loader would refuse)";
+        return {};
+    }
+    return "architecture is '" + arch->s + "', this engine requires 'qwen4exp' (Qwen3.8-Flash-Next) or 'qwen35moe' "
+           "(Qwen3.6-35B-A3B)";
 }
 
 } // namespace strata

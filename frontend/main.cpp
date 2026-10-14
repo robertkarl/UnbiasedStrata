@@ -18,7 +18,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -40,6 +39,17 @@ int strata_engine_main(int argc, char** argv);
 
 namespace {
 
+// the model id reported on /v1/models and in every completion: the GGUF's base name (`Qwen3.6-35B-A3B-UD-IQ3_XXS`,
+// `Qwen3.8-Flash-Next-GSQ-RCO-IQ3_XXS` for shard 1 without its `-00001-of-00002`), set once the options are parsed
+std::string g_model_name = "unbiased-strata";
+std::string model_name_of(const std::string& path) {
+    std::string b = path.substr(path.find_last_of('/') == std::string::npos ? 0 : path.find_last_of('/') + 1);
+    if (b.size() > 5 && b.compare(b.size() - 5, 5, ".gguf") == 0) b.resize(b.size() - 5);
+    const size_t at = b.rfind("-00001-of-");
+    if (at != std::string::npos) b.resize(at);
+    return b.empty() ? std::string("unbiased-strata") : b;
+}
+
 struct Options {
     std::string model;                  // shard 1 of the GGUF
     std::string pack;                   // the prepared pack directory
@@ -50,13 +60,15 @@ struct Options {
     int port = 8080;
     long long ctx = 32768;
     int threads = 0;                    // CPU expert workers; 0 = the engine's default (every physical core)
+    long long vram_cap_mib = 0;         // --vram-cap: the engine limits itself to a smaller card's VRAM
+    double ram_cap_gib = 0.0;           // --ram-cap: bounds the engine's RAM expert tier and pinned arena
     std::vector<std::string> extra;     // after `--`: passed to the engine as they are
 };
 
 void usage() {
     std::fprintf(stderr,
         "usage: unbiased-strata --model SHARD1.gguf --pack DIR --mtp DIR [options] [-- engine options]\n\n"
-        "  --model PATH    the model's first GGUF shard (...-00001-of-0000N.gguf); the other shards must be beside it\n"
+        "  --model PATH    the model's first GGUF shard (...-00001-of-00002.gguf); the second must be beside it\n"
         "  --pack DIR      the prepared pack for that model\n"
         "  --mtp DIR       the prepared draft head\n"
         "  --mmproj PATH   enable image input using this vision encoder (CPU)\n"
@@ -65,21 +77,17 @@ void usage() {
         "  --threads N     CPU threads for the experts the GPU does not hold (default: every physical core,\n"
         "                  or half the CPU quota inside a container that has one)\n"
         "  --host ADDR     address to listen on (default 127.0.0.1)\n"
-        "  --port N        port to listen on (default 8080)\n\n"
-        "Serves POST /v1/chat/completions (OpenAI style, with streaming), GET /v1/models and GET /health.\n");
+        "  --port N        port to listen on (default 8080)\n"
+        "  --vram-cap MIB  emulate a smaller card: the engine uses at most MIB of VRAM (a 1080 Ti as 6 GB: 5722)\n"
+        "  --ram-cap GIB   bound the engine's RAM expert tier and pinned arena to GIB\n\n"
+        "Serves POST /v1/chat/completions (OpenAI style, with streaming), GET /v1/models and GET /health (with the\n"
+        "engine's expert tiers and per-token counters: VRAM slots, RAM copies, mapped experts, hits, warm hints,\n"
+        "major page faults).\n");
 }
 
 bool file_exists(const std::string& p) {
     struct stat st;
     return ::stat(p.c_str(), &st) == 0;
-}
-
-/// The model name the API reports: the base name of the first shard up to "-00001-of-", in lower case.
-std::string model_name(const std::string& shard1) {
-    std::string name = shard1.substr(shard1.rfind('/') + 1);
-    name.resize(std::min(name.size(), name.rfind("-00001-of-")));
-    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return (char) std::tolower(c); });
-    return name;
 }
 
 // ---------------------------------------------------------------------------------------------------- the engine
@@ -138,9 +146,58 @@ struct Prepared {
     long long max_new = 0;
 };
 
+/// The parse of one response as its text grows: what has been published, and what to publish next.
+///
+/// Reasoning and answer text are published as they arrive.  Tool calls are published once, from the parse of the
+/// complete message: while a call is being written its arguments are partial JSON that the parser closes and
+/// normalizes on every token, so text already parsed can change (an escape, a number still being written), and
+/// an OpenAI stream cannot take back what it sent.  The same rule keeps the answer text sound: a partial parse
+/// whose content does not extend what was published (the parser reread the tail as the start of a tool call)
+/// publishes nothing for the content until it does.  This changes delivery, never generated tokens.
+struct StreamParse {
+    common_chat_msg msg;                // what has been published
+    std::vector<std::string> call_ids;
+
+    std::vector<common_chat_msg_diff> step(const std::string& text, bool partial, const common_chat_parser_params& parser) {
+        common_chat_msg now;
+        try {
+            now = common_chat_parse(text, partial, parser);
+        } catch (const std::exception&) {
+            if (partial) return {};                             // not parseable yet: wait for more text
+            now = common_chat_msg();
+            now.role = "assistant";
+            now.content = text;
+        }
+        now.content_parts.clear();
+        if (partial) {
+            now.tool_calls.clear();
+            if (now.content.compare(0, msg.content.size(), msg.content) != 0) now.content = msg.content;
+            if (now.reasoning_content.compare(0, msg.reasoning_content.size(), msg.reasoning_content) != 0)
+                now.reasoning_content = msg.reasoning_content;
+        } else {
+            // the complete parse decides; text it no longer holds was already sent and stays sent (the parser
+            // trims the white space before a tool call, which the partial parses still carried)
+            for (auto field : {&common_chat_msg::content, &common_chat_msg::reasoning_content}) {
+                const std::string& sent = msg.*field;
+                std::string& whole = now.*field;
+                if (whole.compare(0, sent.size(), sent) == 0) continue;
+                if (sent.compare(0, whole.size(), whole) != 0)
+                    std::fprintf(stderr, "unbiased-strata: the complete message's %s differs from the %zu bytes "
+                                         "already streamed; the stream keeps what it sent\n",
+                                 field == &common_chat_msg::content ? "content" : "reasoning", sent.size());
+                whole = sent;
+            }
+        }
+        if (now.empty()) return {};
+        now.set_tool_call_ids(call_ids, [] { return "call_" + make_id().substr(9); });
+        std::vector<common_chat_msg_diff> diffs = common_chat_msg_diff::compute_diffs(msg, now);
+        msg = now;
+        return diffs;
+    }
+};
+
 struct Server {
     Options opt;
-    std::string model_name;
     Engine engine;
     strata_frontend::Vision vision;
     llama_model* model = nullptr;
@@ -193,6 +250,12 @@ struct Server {
                 in.enable_thinking = kw.at("enable_thinking").get<bool>();
             if (kw.contains("reasoning_effort") && kw.at("reasoning_effort").is_string())
                 in.chat_template_kwargs["reasoning_effort"] = kw.at("reasoning_effort").dump();
+            // Qwen3.6's template drops the reasoning of every reply before the last user message unless this is
+            // set; with it (and the client sending reasoning_content back) the history renders as it was
+            // generated, so the next turn reuses the checkpoint at the end of the reply, not only the one at
+            // its header
+            if (kw.contains("preserve_thinking") && kw.at("preserve_thinking").is_boolean())
+                in.chat_template_kwargs["preserve_thinking"] = kw.at("preserve_thinking").dump();
         }
         const common_chat_params cp = common_chat_templates_apply(tmpls.get(), in);
         std::string rendered = cp.prompt;
@@ -235,13 +298,17 @@ struct Server {
         p.parser.parse_tool_calls = true;
         if (!cp.parser.empty()) p.parser.parser.load(cp.parser);
 
+        // The engine refuses a request unless prompt + max_new + 8 <= context (generate.cpp, the GEN handler), so
+        // the slots it keeps back are not ours to promise.  Without this a client that asks for "as much as fits"
+        // (pi sends max_tokens 32768 on a 64K card) was refused on every prompt longer than ctx - max_tokens.
+        constexpr long long kEngineReserve = 8;
         const long long n = (long long) p.ids.size();
-        if (n + 1 > opt.ctx) {
+        if (n + 1 + kEngineReserve > opt.ctx) {
             err = "the prompt is " + std::to_string(n) + " tokens, which does not fit the context of " +
                   std::to_string(opt.ctx);
             return false;
         }
-        long long max_new = opt.ctx - n;
+        long long max_new = opt.ctx - n - kEngineReserve;
         for (const char* key : {"max_completion_tokens", "max_tokens"})
             if (body.contains(key) && body.at(key).is_number()) {
                 const long long want = body.at(key).get<long long>();
@@ -321,42 +388,29 @@ struct Server {
     }
 
     /// Runs one request.  The text produced so far is parsed by llama.cpp's chat parser after every token, and
-    /// `emit` gets what changed (reasoning, answer text, tool-call pieces); it returns false when the client has
-    /// gone.  `final_msg` is the whole parsed message.
+    /// `emit` gets what changed (reasoning and answer text as they grow, tool calls once the message is complete:
+    /// see StreamParse); it returns false when the client has gone.  `final_msg` is the whole parsed message.
+    /// `keepalive`, when given, is called whenever 15 s pass without an emit (a long tool call is silent while
+    /// its arguments are written): the stream writes an SSE comment, which keeps clients with an idle timeout
+    /// (pi: 5 minutes) attached and notices a client that has gone, so the generation is cancelled instead of
+    /// running to the end for nobody.
     GenResult run(const Prepared& p, common_chat_msg& final_msg,
-                  const std::function<bool(const std::vector<common_chat_msg_diff>&)>& emit) {
+                  const std::function<bool(const std::vector<common_chat_msg_diff>&)>& emit,
+                  const std::function<bool()>& keepalive = {}) {
         std::lock_guard<std::mutex> lk(engine.mu);
         std::fprintf(stderr, "unbiased-strata: request %s start: prompt=%zu header=%s\n",
                      p.request_id.c_str(), p.ids.size(), p.header.c_str());
         std::string text, pending;
-        common_chat_msg msg;
-        std::vector<std::string> call_ids;
+        StreamParse parse;
+        common_chat_msg& msg = parse.msg;
         bool client_ok = true;
+        auto last_write = std::chrono::steady_clock::now();
         auto update = [&](bool partial) {
-            common_chat_msg now;
-            try {
-                now = common_chat_parse(text, partial, p.parser);
-            } catch (const std::exception&) {
-                if (partial) return;                            // not parseable yet: wait for more text
-                now = common_chat_msg();
-                now.role = "assistant";
-                now.content = text;
+            const std::vector<common_chat_msg_diff> diffs = parse.step(text, partial, p.parser);
+            if (client_ok && !diffs.empty()) {
+                client_ok = emit(diffs);
+                last_write = std::chrono::steady_clock::now();
             }
-            // Partial tool JSON is reparsed and normalized as tokens arrive.
-            // Escapes and incomplete arguments can change already-parsed text,
-            // which cannot be retracted from an OpenAI stream. Publish content
-            // and tool calls once, after the full message is parsed; reasoning
-            // can still stream. This changes delivery, never generated tokens.
-            if (partial) {
-                now.content.clear();
-                now.content_parts.clear();
-                now.tool_calls.clear();
-            }
-            if (now.empty()) return;
-            now.set_tool_call_ids(call_ids, [] { return "call_" + make_id().substr(9); });
-            const std::vector<common_chat_msg_diff> diffs = common_chat_msg_diff::compute_diffs(msg, now);
-            msg = now;
-            if (client_ok && !diffs.empty()) client_ok = emit(diffs);
         };
         GenResult r = engine.generate(p.header, p.ids, [&](llama_token id) {
             if (llama_vocab_is_eog(vocab, id)) return client_ok;
@@ -365,7 +419,14 @@ struct Server {
             if (n > 0) {
                 text.append(pending, 0, n);
                 pending.erase(0, n);
-                update(true);
+                if (p.stream) update(true);                     // a whole response is parsed once, at the end
+            }
+            if (client_ok && keepalive) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now - last_write >= std::chrono::seconds(15)) {
+                    client_ok = keepalive();
+                    last_write = now;
+                }
             }
             return client_ok;
         });
@@ -429,7 +490,7 @@ struct Server {
             out["id"] = id;
             out["object"] = "chat.completion";
             out["created"] = created;
-            out["model"] = model_name;
+            out["model"] = g_model_name;
             out["choices"] = common_json::array();
             out["choices"].push_back(choice);
             out["usage"] = usage_json(r);
@@ -450,7 +511,7 @@ struct Server {
                 out["id"] = id;
                 out["object"] = "chat.completion.chunk";
                 out["created"] = created;
-                out["model"] = model_name;
+                out["model"] = g_model_name;
                 out["choices"] = common_json::array();
                 out["choices"].push_back(choice);
                 if (done) { out["usage"] = usage_json(*done); out["timings"] = timings_json(*done); }
@@ -481,6 +542,10 @@ struct Server {
                     if (d.size() == 0) continue;
                     ok = ok && chunk(d, nullptr, nullptr);
                 }
+                return ok;
+            }, [&]() {
+                static const std::string ka = ": keepalive\n\n";   // an SSE comment: every client ignores it
+                ok = ok && sink.write(ka.data(), ka.size());
                 return ok;
             });
             if (ok) {
@@ -559,6 +624,8 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--port") o.port = std::atoi(next("--port").c_str());
         else if (a == "--ctx") o.ctx = std::atoll(next("--ctx").c_str());
         else if (a == "--threads") o.threads = std::atoi(next("--threads").c_str());
+        else if (a == "--vram-cap") o.vram_cap_mib = std::atoll(next("--vram-cap").c_str());
+        else if (a == "--ram-cap") o.ram_cap_gib = std::atof(next("--ram-cap").c_str());
         else if (a == "--") {
             for (++i; i < argc; ++i) {
                 const std::string e = argv[i];
@@ -586,18 +653,20 @@ int main(int argc, char** argv) {
     Server srv;
     Options& o = srv.opt;
     if (!parse_args(argc, argv, o)) { usage(); return 2; }
+    g_model_name = model_name_of(o.model);
 
     // every file the engine needs must already be here: nothing is fetched
-    if (o.model.find("-00001-of-") == std::string::npos) {
-        std::fprintf(stderr, "unbiased-strata: --model must be the first shard (...-00001-of-0000N.gguf); "
-                             "the other shards must be beside it\n");
-        return 2;
-    }
-    srv.model_name = model_name(o.model);
+    // Flash-Next ships as two shards and the second holds the PLE table, so it is the engine's --ple-gguf; a one-file
+    // model (Qwen3.6-35B-A3B) has no PLE and no second shard, and the engine decides from the file's architecture
+    std::string shard2 = o.model;
+    const size_t at = shard2.rfind("-00001-of-00002");
+    if (at != std::string::npos) shard2.replace(at, 15, "-00002-of-00002");
+    else shard2.clear();
     const std::string profile = o.pack + "/expert-profile.bin";
-    for (const std::string& f : {o.model, o.pack + "/index.txt", profile, o.mtp + "/experts.bin",
-                                 o.mtp + "/draft_vocab.bin"})
-        if (!file_exists(f)) { std::fprintf(stderr, "unbiased-strata: missing file: %s\n", f.c_str()); return 2; }
+    // draft_vocab.bin is the draft head's vocabulary subset; a Qwen3.6 draft pack built with the full head
+    // (tools/mtp_qwen36_pack.py --full-head) has none and the engine then drafts over the whole vocabulary
+    for (const std::string& f : {o.model, shard2, o.pack + "/index.txt", profile, o.mtp + "/experts.bin"})
+        if (!f.empty() && !file_exists(f)) { std::fprintf(stderr, "unbiased-strata: missing file: %s\n", f.c_str()); return 2; }
     if (o.ctx < 1024) { std::fprintf(stderr, "unbiased-strata: --ctx must be at least 1024\n"); return 2; }
 
     if (!o.mmproj.empty() && (!file_exists(o.mmproj) || o.vision_tokens < 16 || o.vision_tokens > 4096)) {
@@ -607,7 +676,10 @@ int main(int argc, char** argv) {
     std::vector<std::string> eargs = {
         "unbiased-strata", "--engine", "--serve", "--pack", o.pack, "--native", o.model,
         "--expert-profile", profile, "--expert-cache", "auto", "--prefill", "auto", "--spec", "4", "--spec-min-p", "0.5",
-        "--mtp", o.mtp, "--max-context", std::to_string(o.ctx), "--ple-io", "ram"};
+        "--mtp", o.mtp, "--max-context", std::to_string(o.ctx)};
+    if (!shard2.empty()) { eargs.push_back("--ple-gguf"); eargs.push_back(shard2); eargs.push_back("--ple-io"); eargs.push_back("ram"); }
+    if (o.vram_cap_mib > 0) { eargs.push_back("--vram-cap"); eargs.push_back(std::to_string(o.vram_cap_mib)); }
+    if (o.ram_cap_gib > 0.0) { eargs.push_back("--ram-cap"); eargs.push_back(std::to_string(o.ram_cap_gib)); }
     if (!o.mmproj.empty()) eargs.push_back("--vision");
     if (o.ctx > 8192) { eargs.push_back("--kv"); eargs.push_back("int8"); }
     if (o.threads <= 0) {
@@ -643,23 +715,62 @@ int main(int argc, char** argv) {
     }
 
     std::fprintf(stderr, "unbiased-strata: loading the model (this takes a few minutes)...\n");
-    if (!srv.engine.wait_ready(err)) {
+    long long engine_ctx = 0;
+    if (!srv.engine.wait_ready(err, &engine_ctx)) {
         std::fprintf(stderr, "unbiased-strata: %s\n", err.c_str());
         srv.engine.quit();
         return 1;
+    }
+    if (engine_ctx > 0 && engine_ctx != o.ctx) {   // the engine's VRAM plan lowered the context: serve that one
+        std::fprintf(stderr, "unbiased-strata: the engine allocated a context of %lld tokens, not the %lld requested; "
+                             "requests are bounded by %lld\n", engine_ctx, o.ctx, engine_ctx);
+        o.ctx = engine_ctx;
     }
 
     httplib::Server http;
     g_server = &srv;
     g_http = &http;
+    // /health: ok or error, plus the engine's expert tiers and counters when it is between requests (STATS: VRAM
+    // slots and how many hold an expert, RAM copies, mapped experts, tokens served, VRAM hits of lookups, RAM-copy
+    // and file reads, warm hints, major page faults).  During a request the last reading is served, marked stale.
+    // httplib serves /health from several threads: the last reading has its own lock (engine.mu is the engine's,
+    // taken only to ask), and every read of it is a copy under that lock.
+    static std::mutex stats_mu;
+    static std::string last_stats;
     http.Get("/health", [&](const httplib::Request&, httplib::Response& res) {
         res.status = srv.engine.alive() ? 200 : 503;
-        res.set_content(srv.engine.alive() ? "{\"status\":\"ok\"}" : "{\"status\":\"error\"}", "application/json");
+        std::string body = srv.engine.alive() ? "{\"status\":\"ok\"" : "{\"status\":\"error\"";
+        if (srv.engine.alive()) {
+            std::unique_lock<std::mutex> lk(srv.engine.mu, std::try_to_lock);
+            if (lk.owns_lock()) {
+                std::string reply, err;
+                const bool got = srv.engine.command("STATS", "STATS ", reply, err);
+                lk.unlock();
+                std::string stats;
+                {
+                    std::lock_guard<std::mutex> sl(stats_mu);
+                    if (got) last_stats = reply.substr(6);
+                    stats = last_stats;
+                }
+                if (!got && stats.empty()) body += ",\"tiers_error\":\"" + err + "\"";
+                if (!stats.empty()) body += ",\"tiers\":" + stats;
+            } else {
+                std::string stats;
+                {
+                    std::lock_guard<std::mutex> sl(stats_mu);
+                    stats = last_stats;
+                }
+                if (!stats.empty()) body += ",\"tiers\":" + stats + ",\"tiers_stale\":true";
+                else body += ",\"busy\":true";
+            }
+        }
+        body += "}";
+        res.set_content(body, "application/json");
     });
     http.Get("/v1/models", [&](const httplib::Request&, httplib::Response& res) {
         if (!srv.engine.alive()) return json_error(res, 503, "the engine is not running", "server_error");
         common_json m = common_json::object();
-        m["id"] = srv.model_name;
+        m["id"] = g_model_name;
         m["object"] = "model";
         m["owned_by"] = "local";
         m["context_length"] = srv.opt.ctx;

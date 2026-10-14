@@ -9,8 +9,10 @@
 //
 //   S <- g S + k (beta (v - g S^T k))^T      (g = exp(gate[head]), per value head; q/k shared by h_v / h_k heads)
 //   o  = (S^T q) / sqrt(128)
-//   y  = rmsnorm(o) * gamma * sigmoid(z)
+//   y  = rmsnorm(o) * gamma * act(z)           (act = sigmoid for Flash-Next, SiLU for Qwen3.6: `GdnGate`, gdn.hpp)
 #pragma once
+
+#include "strata/kernels/gdn.hpp"
 
 #include <cstdint>
 
@@ -28,8 +30,11 @@ void fused_gdn_conv_l2(float* history, const float* qkv, const float* conv_w, fl
 void fused_gdn_ab(const float* x, const uint16_t* w_alpha, const uint16_t* w_beta, const float* dt, const float* ssm_a,
                   float* gate, float* beta, int n_embd, int h_v, void* stream);
 
+/// The step and the output norm in one kernel: state (S, h_v, S) in place, q/k (h_k, 128) L2-normalised and NOT
+/// pre-scaled (the 1/sqrt(S) goes on the readout), v/z/y (h_v, 128), gate/beta (h_v), gamma (128).  `act` is the
+/// model's output gate (`GdnGate`); `h_v % h_k == 0`, any h_v (Flash-Next 48, Qwen3.6 32).
 void fused_gdn_step_norm(float* state, const float* q, const float* k, const float* v, const float* gate,
-                         const float* beta, const float* z, const float* gamma, float eps, float* y, int h_k, int h_v,
-                         void* stream);
+                         const float* beta, const float* z, const float* gamma, float eps, GdnGate act, float* y,
+                         int h_k, int h_v, void* stream);
 
 }  // namespace strata::kernels

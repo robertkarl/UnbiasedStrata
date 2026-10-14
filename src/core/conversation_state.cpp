@@ -61,6 +61,10 @@ bool checkpoint_targets(const SessionState& ss, const ModelGeometry& g, size_t t
         const auto& st = owned(ss, j);
         const auto block = strata::kernels::qsa_real_shapes().idx_block;
         size_t pooled_bytes = 0;
+        if (!g.has_indexer()) {   // dense attention: no indexer buffers to carry, only the cell bound
+            if (st.max_cells < 0 || tokens > (uint64_t) st.max_cells) return fail(error, "invalid running-state cell bound");
+            continue;
+        }
         if (!st.idx_tail || !st.idx_dead || !st.idx_block_pos || !st.idx_pooled ||
             st.max_cells < 0 || tokens > (uint64_t) st.max_cells ||
             (tokens && tokens / (uint64_t) block >= (uint64_t) std::max<int64_t>(0, st.idx_pooled_rows)) ||
@@ -106,8 +110,12 @@ bool metadata_bytes(const ConversationCheckpoint& c, size_t& total) {
 bool conversation_state_sizes(const ModelGeometry& g, ConversationStateSizes& z, std::string& error) {
     z = {};
     const auto key = geometry_key(g);
-    for (size_t i = 0; i < key.size(); ++i)
-        if (key[i] < 0 || (i != 1 && key[i] == 0)) return fail(error, "invalid model geometry");
+    // A plain-residual model (hc 1) has no hyper-connection rate (key 15) and a dense-attention model has no
+    // indexer (keys 12 and 13, the indexer heads and key width): those zeros are the geometry, not an error.
+    for (size_t i = 0; i < key.size(); ++i) {
+        const bool may_be_zero = i == 1 || (!g.has_indexer() && (i == 12 || i == 13)) || (g.hc == 1 && i == 15);
+        if (key[i] < 0 || (!may_be_zero && key[i] == 0)) return fail(error, "invalid model geometry");
+    }
     size_t recurrence = 0, convolution = 0;
     if (!product(recurrence, {(uint64_t) g.ssm_state_size, (uint64_t) g.ssm_v_heads, (uint64_t) g.ssm_state_size}) ||
         !product(convolution, {(uint64_t) g.ssm_conv_channels, (uint64_t) (g.ssm_d_conv - 1)}) ||
@@ -118,7 +126,7 @@ bool conversation_state_sizes(const ModelGeometry& g, ConversationStateSizes& z,
                           (uint64_t) g.idx_key_dim, sizeof(float)}) ||
         !product(z.dead, {(uint64_t) g.idx_key_dim, sizeof(float)}))
         return fail(error, "running-state byte count overflow");
-    z.block_pos = sizeof(int32_t);
+    z.block_pos = g.has_indexer() ? sizeof(int32_t) : 0;   // no indexer: no block position, no tail, no dead row
     size_t total = 0;
     if (!product(total, {(uint64_t) g.n_qsa_layers(), z.tail}) ||
         !product(total, {(uint64_t) g.n_qsa_layers(), z.dead}) ||

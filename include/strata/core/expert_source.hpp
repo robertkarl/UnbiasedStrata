@@ -80,6 +80,10 @@ struct HostMemory {
 bool host_available_memory(HostMemory& m, const std::string& meminfo = "/proc/meminfo",
                            const std::string& self_cgroup = "/proc/self/cgroup",
                            const std::string& cgroup_root = "/sys/fs/cgroup");
+/// --ram-cap (Qwen3.6 port, step 2): every `host_available_memory` answer is clamped to this many bytes, so the RAM
+/// tier is sized as a machine of that much RAM would size it.  0 = no cap.
+void set_host_ram_cap(uint64_t bytes);
+uint64_t host_ram_cap();
 
 /// Build compact offsets for experts absent from both the primary GPU cache and an optional second GPU tier.
 /// Kept CPU-only so selection and byte accounting can be tested without initializing a GPU.
@@ -466,6 +470,8 @@ public:
     uint64_t resident_bytes() const { return complement_bytes_; }
     bool complement_pinned() const { return complement_pinned_; }
     bool complement_ready() const { return complement_ready_; }
+    /// How many experts the RAM copy holds (the RAM tier's count for the start-up log and /health; 0 before it is built).
+    int64_t complement_count() const;
     uint64_t locked_bytes() const { return complement_locked_; }
     /// Lend-region slots whose experts the compact copy holds (the last ones of the cache).
     int64_t resident_lent_slots() const { return complement_lent_slots_; }
@@ -609,6 +615,7 @@ private:
     const uint8_t* complement_device_ = nullptr;
     uint64_t complement_bytes_ = 0;
     std::vector<uint64_t> complement_offsets_;
+    int64_t complement_count_ = 0;   ///< experts in the RAM copy (counted when it is built)
     bool complement_pinned_ = false;
     bool complement_partial_ = false;         ///< CS-T: only the first complement_pin_limit_ bytes are registered
     uint64_t complement_pin_limit_ = 0;

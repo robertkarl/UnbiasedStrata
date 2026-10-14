@@ -46,11 +46,19 @@ public:
         return out_ != nullptr;
     }
 
-    /// Reads the engine's start-up lines until it says READY.  Loading the model takes minutes.
-    bool wait_ready(std::string& err) {
+    /// Reads the engine's start-up lines until it says READY.  Loading the model takes minutes.  The READY line
+    /// carries the context the engine actually allocated (`READY <max_context> stop`): its VRAM plan may have
+    /// lowered the request, and the front end's request limit and /v1/models follow that figure, not --ctx.
+    bool wait_ready(std::string& err, long long* context = nullptr) {
         std::string line;
         while (read_line(line)) {
-            if (line.rfind("READY", 0) == 0) return true;
+            if (line.rfind("READY", 0) == 0) {
+                if (context != nullptr) {
+                    const long long n = std::atoll(line.c_str() + 5);
+                    if (n > 0) *context = n;
+                }
+                return true;
+            }
             if (line.rfind("ERR", 0) == 0) { err = line; return false; }
         }
         err = "the engine exited before it was ready (its messages are above)";
@@ -113,6 +121,21 @@ public:
         alive_ = false;
         r.error = "the engine exited during the request";
         return r;
+    }
+
+    /// One command line between requests (the caller holds `mu`): the engine's one-line reply whose first word is
+    /// `reply_prefix` lands in `reply`; an ERR line is the error.  `STATS` is the one in use (the server's /health).
+    bool command(const std::string& line, const char* reply_prefix, std::string& reply, std::string& err) {
+        if (!alive_) { err = "the engine is not running"; return false; }
+        if (!send(line + "\n")) { err = "the engine is not running"; return false; }
+        std::string got;
+        while (read_line(got)) {
+            if (got.rfind(reply_prefix, 0) == 0) { reply = got; return true; }
+            if (got.rfind("ERR", 0) == 0) { err = got.size() > 4 ? got.substr(4) : "the engine reported an error"; return false; }
+        }
+        alive_ = false;
+        err = "the engine exited";
+        return false;
     }
 
     void quit() {

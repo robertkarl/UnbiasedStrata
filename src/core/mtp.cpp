@@ -1,4 +1,5 @@
 // src/core/mtp.cpp - see include/strata/core/mtp.hpp.
+#include "strata/core/qsa_shapes.hpp"
 #include "strata/core/mtp.hpp"
 #include "strata/core/coupled_draft.hpp"
 #include "strata/core/on_device.hpp"
@@ -10,6 +11,7 @@
 #include "strata/kernels/elementwise.hpp"
 #include "strata/kernels/fused_gr.hpp"
 #include "strata/kernels/gr.hpp"
+#include "strata/kernels/iq_kernels.hpp"
 #include "strata/kernels/kv_q4.hpp"
 #include "strata/kernels/kv_q8.hpp"
 #include "strata/kernels/native_moe.hpp"
@@ -68,15 +70,8 @@ bool mapped(size_t bytes, void** h, void** d) {
     return cudaHostGetDevicePointer(d, *h, 0) == cudaSuccess;
 }
 
-strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
-    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    s.n_head = g.n_head;
-    s.n_head_kv = g.n_head_kv;
-    s.head_dim = g.head_dim;
-    s.idx_n_head = g.idx_q_heads;
-    s.idx_dim = g.idx_key_dim;
-    return s;
-}
+// the one builder (strata/core/qsa_shapes.hpp): a dense geometry has its three indexer widths zero together
+strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) { return strata::core::qsa_shapes(g); }
 
 // 64-bit seek/tell on a `FILE*`: `fseek`/`ftell` take a 32-bit `long` on Windows and would wrap past 2 GiB.
 #if defined(_WIN32)
@@ -86,6 +81,30 @@ strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
 #define STRATA_FILE_SEEK64(f, o, w) fseeko((f), (off_t) (o), (w))
 #define STRATA_FILE_TELL64(f) ftello(f)
 #endif
+
+/// dense.txt's `kind` -> ggml type id for a projection kept in its GGUF form (Qwen3.6's pack: tools/mtp_qwen36_pack.py
+/// writes the type's name in lowercase); -1 for `f32`, `bf16` and anything else.
+int ggml_type_of_kind(const std::string& k) {
+    static const struct { const char* name; int type; } kinds[] = {
+        {"q4_0", 2}, {"q4_1", 3}, {"q5_0", 6}, {"q5_1", 7}, {"q8_0", 8}, {"q2_k", 10}, {"q3_k", 11}, {"q4_k", 12},
+        {"q5_k", 13}, {"q6_k", 14}, {"iq2_xxs", 16}, {"iq2_xs", 17}, {"iq3_xxs", 18}, {"iq1_s", 19}, {"iq4_nl", 20},
+        {"iq3_s", 21}, {"iq2_s", 22}, {"iq4_xs", 23}, {"iq1_m", 29}, {"q2_0", 42}};
+    for (const auto& e : kinds) if (k == e.name) return e.type;
+    return -1;
+}
+
+/// `"key": <integer>` in a small JSON text (mtp.json), or `missing` when absent.  The pack's geometry record is flat
+/// integers; a real parser is not needed for a check that refuses by name.
+long long json_int(const std::string& text, const char* key, long long missing = -1) {
+    const std::string k = "\"" + std::string(key) + "\":";
+    size_t at = text.find(k);
+    if (at == std::string::npos) return missing;
+    at += k.size();
+    while (at < text.size() && (text[at] == ' ' || text[at] == '\t')) ++at;
+    char* end = nullptr;
+    const long long v = std::strtoll(text.c_str() + at, &end, 10);
+    return end == text.c_str() + at ? missing : v;
+}
 
 bool read_file(const std::string& path, std::vector<uint8_t>& out) {
     // Loader fix (0.1.15+loaderfix.2): `ifstream::read` reaches the disk as 4095-byte reads on MSVC - the same
@@ -146,6 +165,116 @@ const void* MtpDrafter::q8(const char* name) const {
     for (const auto& t : tensors_) if (t.name == name && t.kind == "q8_0") return dense_ + t.off;
     return nullptr;
 }
+const void* MtpDrafter::tensor_native(const char* name, int* type) const {
+    for (const auto& t : tensors_)
+        if (t.name == name && t.type >= 0) {
+            if (type) *type = t.type;
+            return dense_ + t.off;
+        }
+    return nullptr;
+}
+bool MtpDrafter::qwen36() const { return g_ != nullptr && g_->arch == ModelArch::Qwen35Moe; }
+
+// ---- Qwen3.6: the pack's record of the block it was cut from (mtp.json), held against the trunk's geometry
+bool MtpDrafter::check_qwen36_pack(const std::string& rt_dir, const ModelGeometry& g, std::string& err) {
+    std::vector<uint8_t> raw;
+    if (!read_file(rt_dir + "/mtp.json", raw)) { err = "mtp: cannot read " + rt_dir + "/mtp.json (a Qwen3.6 draft pack is written by tools/mtp_qwen36_pack.py)"; return false; }
+    const std::string text(raw.begin(), raw.end());
+    if (text.find("\"arch\": \"qwen35moe\"") == std::string::npos) {
+        err = "mtp: " + rt_dir + " is not a qwen35moe draft pack (mtp.json names another architecture or none)";
+        return false;
+    }
+    const struct { const char* key; int64_t want; } fields[] = {
+        {"n_embd", g.n_embd}, {"n_head", g.n_head}, {"n_head_kv", g.n_head_kv}, {"head_dim", g.head_dim},
+        {"n_rot", g.n_rot}, {"n_expert", g.n_expert}, {"n_expert_used", g.n_expert_used}, {"n_ff", g.n_ff},
+        {"n_ff_shexp", g.n_ff_shexp}};
+    for (const auto& f : fields) {
+        const long long have = json_int(text, f.key);
+        if (have != (long long) f.want) {
+            err = "mtp: the draft pack " + rt_dir + " was cut for " + f.key + " " + std::to_string(have) +
+                  " but the trunk has " + std::to_string((long long) f.want) + " (the geometry follows the target)";
+            return false;
+        }
+    }
+    static const char* required[] = {"nextn.eh_proj.weight", "nextn.enorm.weight", "nextn.hnorm.weight",
+                                     "nextn.shared_head_norm.weight", "attn_norm.weight", "post_attention_norm.weight",
+                                     "attn_q.weight", "attn_k.weight", "attn_v.weight", "attn_output.weight",
+                                     "attn_q_norm.weight", "attn_k_norm.weight", "ffn_gate_inp.weight",
+                                     "ffn_gate_inp_shexp.weight", "ffn_gate_shexp.weight", "ffn_up_shexp.weight",
+                                     "ffn_down_shexp.weight"};
+    for (const char* n : required) {
+        const Tensor* t = nullptr;
+        for (const auto& c : tensors_) if (c.name == n) t = &c;
+        if (t == nullptr) { err = std::string("mtp: ") + n + " is missing from " + rt_dir + "/dense.txt"; return false; }
+        const bool norm = std::strstr(n, "norm") != nullptr;
+        const bool router = std::strcmp(n, "ffn_gate_inp.weight") == 0 || std::strcmp(n, "ffn_gate_inp_shexp.weight") == 0;
+        const char* want = norm ? "f32" : router ? "bf16" : "a native projection type";
+        const bool ok = norm ? t->kind == "f32" : router ? t->kind == "bf16" : t->type >= 0;
+        if (!ok) { err = std::string("mtp: ") + n + " is kind " + t->kind + " in dense.txt; the drafter reads it as " + want; return false; }
+        if (!norm && !router && !strata::kernels::native_mmvq_supported(t->type)) {
+            err = std::string("mtp: ") + n + " is " + t->kind + ", which the native MMVQ has no kernel for";
+            return false;
+        }
+        if (norm) {
+            const bool head_norm = std::strcmp(n, "attn_q_norm.weight") == 0 || std::strcmp(n, "attn_k_norm.weight") == 0;
+            const int64_t want_n = head_norm ? g.head_dim : g.n_embd;
+            if (t->cols != want_n) {
+                err = std::string("mtp: ") + n + " has " + std::to_string(t->cols) + " elements, expected " + std::to_string(want_n);
+                return false;
+            }
+        }
+    }
+    const Tensor* eh = nullptr;
+    for (const auto& c : tensors_) if (c.name == "nextn.eh_proj.weight") eh = &c;
+    if (eh->rows != g.n_embd || eh->cols != 2 * g.n_embd) {
+        err = "mtp: nextn.eh_proj.weight is " + std::to_string(eh->rows) + " x " + std::to_string(eh->cols) +
+              ", expected n_embd x 2 n_embd (" + std::to_string(g.n_embd) + " x " + std::to_string(2 * g.n_embd) + ")";
+        return false;
+    }
+    return true;
+}
+
+// ---- Qwen3.6: the draft block's experts, native GGUF blobs [gate | up | down], every one resident
+bool MtpDrafter::load_qwen36_experts(const std::string& rt_dir, const ModelGeometry& g, uint64_t& bytes, std::string& err) {
+    std::ifstream in(rt_dir + "/native_experts.txt");
+    if (!in) { err = "mtp: cannot open " + rt_dir + "/native_experts.txt"; return false; }
+    std::string line, header;
+    int64_t layer = -1, gu = -1, d = -1, off = -1, blob = -1, g_off = -1, u_off = -1, d_off = -1;
+    int rows = 0;
+    while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        if (line[0] == '#') { header = line; continue; }
+        std::istringstream is(line);
+        if (!(is >> layer >> gu >> d >> off >> blob >> g_off >> u_off >> d_off)) { err = "mtp: malformed native_experts.txt line: " + line; return false; }
+        ++rows;
+    }
+    if (rows != 1) { err = "mtp: native_experts.txt has " + std::to_string(rows) + " layer lines; the drafter is one block"; return false; }
+    const size_t ne_at = header.find("n_expert ");
+    const long long n_expert = ne_at == std::string::npos ? -1 : std::strtoll(header.c_str() + ne_at + 9, nullptr, 10);
+    if (n_expert != (long long) g.n_expert) {
+        err = "mtp: the draft pack's experts.bin holds " + std::to_string(n_expert) + " experts, the trunk routes over " +
+              std::to_string((long long) g.n_expert);
+        return false;
+    }
+    if (!strata::kernels::native_expert_supported((int) gu, (int) d, g.n_embd, g.n_ff)) {
+        err = "mtp: the draft experts are ggml types " + std::to_string(gu) + " (gate/up) / " + std::to_string(d) +
+              " (down) at " + std::to_string((long long) g.n_embd) + " x " + std::to_string((long long) g.n_ff) +
+              ", which the native expert kernels (iq_kernels.cu) have no pair for";
+        return false;
+    }
+    const strata::kernels::NativeExpertLayout L = strata::kernels::native_expert_layout((int) gu, (int) d, g.n_embd, g.n_ff);
+    if ((int64_t) L.bytes != blob || (int64_t) L.up_off != u_off || (int64_t) L.down_off != d_off || g_off != 0 || off != 0) {
+        err = "mtp: native_experts.txt says blob " + std::to_string(blob) + " B (roles at " + std::to_string(g_off) + ", " +
+              std::to_string(u_off) + ", " + std::to_string(d_off) + "), the native layout is " + std::to_string(L.bytes) +
+              " B (0, " + std::to_string(L.up_off) + ", " + std::to_string(L.down_off) + ")";
+        return false;
+    }
+    exp_gu_type_ = (int) gu;
+    exp_d_type_ = (int) d;
+    exp_blob_ = blob;
+    bytes = (uint64_t) blob * (uint64_t) g.n_expert;
+    return true;
+}
 
 bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, SessionState& ss, int max_t, std::string& err,
                       int64_t window) {
@@ -170,6 +299,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
             Tensor t;
             is >> t.name >> t.kind >> t.rows >> t.cols >> t.off >> t.bytes;
             if (!is) { err = "mtp: malformed dense.txt line: " + line; return false; }
+            t.type = ggml_type_of_kind(t.kind);
             tensors_.push_back(t);
         }
         std::vector<uint8_t> blob;
@@ -186,9 +316,13 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         cudaMemcpy(dense_, blob.data(), blob.size(), cudaMemcpyHostToDevice);
         vram_ += blob.size();
     }
-    // ---- the 512 routed experts, one blob each
+    const bool qwen = g.arch == ModelArch::Qwen35Moe;
+    if (qwen && !check_qwen36_pack(rt_dir, g, err)) return false;
+    // ---- the routed experts, one blob each: Flash-Next's 512 canonical Q2_0 blobs, or Qwen3.6's 256 native GGUF blobs
+    uint64_t exp_bytes = (uint64_t) g.n_expert * strata::kernels::cpu::BLOB;
+    if (qwen && !load_qwen36_experts(rt_dir, g, exp_bytes, err)) return false;
     {
-        const uint64_t bytes = (uint64_t) g.n_expert * strata::kernels::cpu::BLOB;
+        const uint64_t bytes = exp_bytes;
         // Loader fix (0.1.15+loaderfix.2): each 64 MiB read below reached the disk as ~16k 4095-byte reads under
         // MSVC's `basic_filebuf::xsgetn`, which is what made 675 MiB of drafter experts take minutes.
         FILE* f = std::fopen((rt_dir + "/experts.bin").c_str(), "rb");
@@ -197,7 +331,7 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
             FILE* f;
             ~Closer() { if (f != nullptr) std::fclose(f); }
         } closer{f};
-        if (cudaMalloc((void**) &experts_, bytes) != cudaSuccess) { err = "mtp: the 512 experts do not fit in VRAM"; return false; }
+        if (cudaMalloc((void**) &experts_, bytes) != cudaSuccess) { err = "mtp: the " + std::to_string((long long) g.n_expert) + " draft experts (" + std::to_string(bytes >> 20) + " MiB) do not fit in VRAM"; return false; }
         std::vector<uint8_t> chunk(64u << 20);
         for (uint64_t off = 0; off < bytes;) {
             const uint64_t n = std::min<uint64_t>(chunk.size(), bytes - off);
@@ -207,10 +341,12 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         }
         vram_ += bytes;
     }
-    const char* required[] = {"fc_embedding.weight", "fc_hidden.weight", "self_attn.q_proj.weight", "self_attn.k_proj.weight",
-                              "self_attn.v_proj.weight", "self_attn.o_proj.weight", "mlp.shared_expert.gate_proj.weight",
-                              "mlp.shared_expert.up_proj.weight", "mlp.shared_expert.down_proj.weight"};
-    for (const char* n : required) if (!q8(n)) { err = std::string("mtp: ") + n + " is missing (q8_0)"; return false; }
+    if (!qwen) {
+        const char* required[] = {"fc_embedding.weight", "fc_hidden.weight", "self_attn.q_proj.weight", "self_attn.k_proj.weight",
+                                  "self_attn.v_proj.weight", "self_attn.o_proj.weight", "mlp.shared_expert.gate_proj.weight",
+                                  "mlp.shared_expert.up_proj.weight", "mlp.shared_expert.down_proj.weight"};
+        for (const char* n : required) if (!q8(n)) { err = std::string("mtp: ") + n + " is missing (q8_0)"; return false; }
+    }
 
     // ---- the layer's own K/V (dense attention: no indexer state is read)
     const strata::kernels::QsaShapes s = shapes_of(g);
@@ -267,7 +403,8 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         mixed_ = b.take<float>(T * N); inj_ = b.take<float>(T * HC); inj2_ = b.take<float>(T * HC);
         lo_ = b.take<float>(T * (uint64_t) g.hc_lr); rs_ = b.take<float>(T * HC); bo_ = b.take<float>(T * N);
         xn_ = b.take<float>(T * HC * N);
-        xq_ = b.take<uint8_t>(strata::kernels::native_q8_1_bytes((int) (NH * HD), 8));
+        xq_ = b.take<uint8_t>(strata::kernels::native_q8_1_bytes((int) std::max<uint64_t>(NH * HD, qwen ? 2 * N : 0), 8));
+        cat_ = qwen ? b.take<float>(T * 2 * N) : nullptr;   // Qwen3.6: concat(enorm, hnorm)
         qfull_ = b.take<float>(T * NH * 2 * HD); qcur_ = b.take<float>(T * NH * HD);
         kcur_ = b.take<float>(T * NKV * HD); vcur_ = b.take<float>(T * NKV * HD);
         attn_ = b.take<float>(T * NH * HD); attn32_ = b.take<float>(T * NH * HD);
@@ -279,8 +416,10 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
         grp_ptr_ = b.take<unsigned long long>(T * K); grp_start_ = b.take<int32_t>(T * K + 1);
         grp_counts_ = b.take<int32_t>(4);
         hit_xq_ = b.take<uint8_t>(T * (N / 32) * 34); hit_xs_ = b.take<float>(T * (N / 32));
-        hit_scratch_ = b.take<uint8_t>(strata::kernels::moe_hit_grouped_scratch_bytes((int64_t) (T * K), g.n_embd, g.n_ff));
-        sh_scratch_ = (float*) b.take<uint8_t>(strata::kernels::shared_expert_scratch_bytes(g.n_ff));
+        hit_scratch_ = b.take<uint8_t>(std::max<uint64_t>(
+            strata::kernels::moe_hit_grouped_scratch_bytes((int64_t) (T * K), g.n_embd, g.n_ff),
+            qwen ? strata::kernels::native_expert_scratch_bytes((int64_t) (T * K), g.n_ff) : 0));
+        sh_scratch_ = (float*) b.take<uint8_t>(strata::kernels::shared_expert_scratch_bytes(std::max(g.n_ff, g.n_ff_shexp)));
         x_bf16_ = b.take<uint16_t>(N);
         out_ids_ = b.take<int32_t>(T + 4);
         probs_ = b.take<float>(T + 4);
@@ -302,11 +441,10 @@ bool MtpDrafter::load(const std::string& rt_dir, const ModelGeometry& g, Session
     }
     if (cudaStreamCreateWithFlags(&cs_, cudaStreamNonBlocking) != cudaSuccess) { err = "mtp: stream"; return false; }
     const double files_s = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_files).count();
-    std::fprintf(stderr, "strata mtp: draft layer loaded, %.0f MiB of VRAM (experts %.0f, dense %.0f), files read in %.2f s (%.0f MiB/s)\n",
-                 (double) vram_ / 1048576.0, (double) g.n_expert * strata::kernels::cpu::BLOB / 1048576.0,
-                 (double) tensors_.back().off / 1048576.0, files_s,
-                 files_s > 0 ? ((double) g.n_expert * strata::kernels::cpu::BLOB + (double) tensors_.back().off) /
-                                   1048576.0 / files_s : 0.0);
+    std::fprintf(stderr, "strata mtp: draft layer loaded (%s), %.0f MiB of VRAM (experts %.0f, dense %.0f), files read in %.2f s (%.0f MiB/s)\n",
+                 qwen ? "qwen35moe: the nextn block, native experts" : "qwen4exp", (double) vram_ / 1048576.0,
+                 (double) exp_bytes / 1048576.0, (double) tensors_.back().off / 1048576.0, files_s,
+                 files_s > 0 ? ((double) exp_bytes + (double) tensors_.back().off) / 1048576.0 / files_s : 0.0);
     return true;
 }
 
@@ -460,6 +598,7 @@ bool MtpDrafter::bind(const WeightTable& wt, const NativeHead* head, const float
 
 // The layer for T rows.  full = false stops after the K/V append (the prompt only needs the cache).
 bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::string& err) {
+    if (qwen36()) return record_forward_qwen36(T, step_row0, cs, err);
     using namespace strata::kernels;
     const ModelGeometry& g = *g_;
     SessionState& ss = *ss_;
@@ -646,6 +785,246 @@ bool MtpDrafter::record_forward(int T, int step_row0, cudaStream_t cs, std::stri
         err = std::string("mtp: ") + e.what();
         return false;
     }
+    return true;
+}
+
+// ---- QWEN3.6: the nextn block on the plain graph (ref/qwen36.py mtp_forward; llama.cpp's graph_mtp).  T rows for the
+// K/V-only pass, one row for the full layer, as record_forward.  `emit` hands a seam to the harness's hook (debug_row);
+// in a graph capture no hook is set and it is nothing.
+bool MtpDrafter::record_forward_qwen36(int T, int step_row0, cudaStream_t cs, std::string& err) {
+    using namespace strata::kernels;
+    const ModelGeometry& g = *g_;
+    SessionState& ss = *ss_;
+    const bool full = step_row0 >= 0;
+    const int row0 = full ? step_row0 : -1 - step_row0;
+    if (full && T != 1) { err = "mtp: the full layer runs one row at a time (its attention scratch is sized for one)"; return false; }
+    const int64_t N = g.n_embd, K = ss.k, NH = g.n_head, HD = g.head_dim, NKV = g.n_head_kv, NE = g.n_expert;
+    const float eps = (float) g.rms_eps;
+    const QsaShapes s = shapes_of(g);
+    const int32_t* step = step_ + row0 * 4;
+    const int32_t* pos = pos_ + row0 * NH;
+    const DebugOpts* dbg = dbg_;
+    auto emit = [&](const char* name, const float* p, int64_t n) {
+        if (seam_ == nullptr) return;
+        cudaStreamSynchronize(cs);
+        (*seam_)(name, p, n);
+    };
+    // ---- the weights: the pack's (dense.txt), and the trunk's output norm
+    const float* w_enorm = f32("nextn.enorm.weight");
+    const float* w_hnorm = f32("nextn.hnorm.weight");
+    const float* w_shn = f32("nextn.shared_head_norm.weight");
+    const float* w_an = f32("attn_norm.weight");
+    const float* w_pn = f32("post_attention_norm.weight");
+    const float* w_qn = f32("attn_q_norm.weight");
+    const float* w_kn = f32("attn_k_norm.weight");
+    const uint16_t* w_router = bf16("ffn_gate_inp.weight");
+    const uint16_t* w_sgate = bf16("ffn_gate_inp_shexp.weight");
+    int t_eh = -1, t_q = -1, t_k = -1, t_v = -1, t_o = -1;
+    const void* w_eh = tensor_native("nextn.eh_proj.weight", &t_eh);
+    const void* w_q = tensor_native("attn_q.weight", &t_q);
+    const void* w_k = tensor_native("attn_k.weight", &t_k);
+    const void* w_v = tensor_native("attn_v.weight", &t_v);
+    const void* w_o = tensor_native("attn_output.weight", &t_o);
+    NativeSharedWeights nsw;
+    nsw.gate_data = tensor_native("ffn_gate_shexp.weight", &nsw.gate_type);
+    nsw.up_data = tensor_native("ffn_up_shexp.weight", &nsw.up_type);
+    nsw.down_data = tensor_native("ffn_down_shexp.weight", &nsw.down_type);
+    nsw.q8_1 = xq_;
+    if (!w_enorm || !w_hnorm || !w_shn || !w_an || !w_pn || !w_qn || !w_kn || !w_router || !w_sgate || !w_eh || !w_q ||
+        !w_k || !w_v || !w_o || !nsw.gate_data || !nsw.up_data || !nsw.down_data) {
+        err = "mtp: a tensor of the Qwen3.6 draft pack is missing (check_qwen36_pack should have refused it)";
+        return false;
+    }
+    if (wt_ == nullptr) { err = "mtp: bind() before the forward"; return false; }
+    const WeightRef* wo_norm = wt_->find("output_norm.weight");
+    if (wo_norm == nullptr || wo_norm->data == nullptr) { err = "mtp: output_norm.weight is missing from the trunk's pack"; return false; }
+    if (wo_norm->kind != WeightKind::F32 || wo_norm->elements != N) {
+        err = "mtp: output_norm.weight is engine form " + std::to_string((int) wo_norm->kind) + " of " +
+              std::to_string(wo_norm->elements) + " elements; the drafter reads F32 x " + std::to_string(N);
+        return false;
+    }
+    try {
+        // ---- the two inputs: the token's embedding, and the trunk's final residual through the trunk's output norm
+        // (llama.cpp's h_nextn: the drafter's input is the OUTPUT-NORMED hidden state, then hnorm on top of it)
+        const WeightRef* we = wt_->find("token_embd.weight");
+        if (!we) { err = "mtp: token_embd.weight is missing"; return false; }
+        if (const NativeEmbed* ne = native_embed()) {
+            ne->gather_dev(tok_, T, emb_, cs);
+        } else {
+            if (we->data == nullptr) { err = "mtp: token_embd.weight has no canonical bytes and no native table is set"; return false; }
+            const auto* codes = (const uint8_t*) we->data;
+            const auto* scales = (const float*) (codes + we->codes_bytes);
+            const auto* offsets = we->has_offset ? (const float*) (codes + we->codes_bytes + we->scales_bytes) : nullptr;
+            embedding_gather_dev(codes, scales, offsets, tok_, T, we->ne0, we->code_bits, we->code_bias, we->group_elems,
+                                 (uint64_t) (we->ne0 / (8 / we->code_bits)), (uint64_t) (we->ne0 / we->group_elems), emb_, cs);
+        }
+        emit("mtp_tok_embd", emb_, T * N);
+        native_qsa_rms_norm_weighted(emb_, w_enorm, en_, (int) N, T, eps, cs);
+        emit("mtp_enorm", en_, T * N);
+        native_qsa_rms_norm_weighted(Rin_, (const float*) wo_norm->data, hn_, (int) N, T, eps, cs);
+        if (dbg != nullptr && dbg->skip_hnorm) {   // the harness's rival: hnorm left out
+            if (cudaMemcpyAsync(h2_, hn_, (size_t) T * N * 4, cudaMemcpyDeviceToDevice, cs) != cudaSuccess) { err = "mtp: copy"; return false; }
+        } else {
+            native_qsa_rms_norm_weighted(hn_, w_hnorm, h2_, (int) N, T, eps, cs);
+        }
+        emit("mtp_hnorm", h2_, T * N);
+        // ---- concat(enorm, hnorm): the embedding first (ggml_concat(e_norm, h_norm, dim 0))
+        const float* first = en_;
+        const float* second = h2_;
+        if (dbg != nullptr && dbg->hidden_first) std::swap(first, second);   // the harness's rival: the wrong order
+        if (cudaMemcpy2DAsync(cat_, (size_t) 2 * N * 4, first, (size_t) N * 4, (size_t) N * 4, (size_t) T, cudaMemcpyDeviceToDevice, cs) != cudaSuccess ||
+            cudaMemcpy2DAsync(cat_ + N, (size_t) 2 * N * 4, second, (size_t) N * 4, (size_t) N * 4, (size_t) T, cudaMemcpyDeviceToDevice, cs) != cudaSuccess) {
+            err = "mtp: the concat copy failed";
+            return false;
+        }
+        emit("mtp_concat", cat_, T * 2 * N);
+        native_quantize_q8_1(cat_, xq_, (int) (2 * N), T, cs);
+        native_mmvq(t_eh, w_eh, xq_, R_, (int) (2 * N), (int) N, T, cs);   // R_: the block's residual stream
+        emit("mtp_eh_proj", R_, T * N);
+        // ---- the attention half: x = rms_norm(R) * attn_norm; K/V into the drafter's own cache
+        native_qsa_rms_norm_weighted(R_, w_an, mixed_, (int) N, T, eps, cs);
+        emit("mtp_attn_norm", mixed_, T * N);
+        native_quantize_q8_1(mixed_, xq_, (int) N, T, cs);
+        native_mmvq(t_k, w_k, xq_, kcur_, (int) N, (int) (NKV * HD), T, cs);
+        native_mmvq(t_v, w_v, xq_, vcur_, (int) N, (int) (NKV * HD), T, cs);
+        emit("mtp_Vcur", vcur_, T * NKV * HD);
+        for (int t = 0; t < T; ++t)
+            native_qsa_rms_norm_weighted(kcur_ + t * NKV * HD, w_kn, kcur_ + t * NKV * HD, (int) HD, (int) NKV, eps, cs);
+        emit("mtp_Kcur_normed", kcur_, T * NKV * HD);
+        auto rope_rows = [&](float* data, int rows, const int32_t* p) {
+            if (native_rope_enabled()) native_rope_apply(data, data, rows, (int) HD, (int) s.n_rot, rope_scaling(), p, cs);
+            else rope_neox_apply(data, data, rows, (int) HD, (int) s.n_rot, st_.cos_tab, st_.sin_tab, p, cs);
+        };
+        for (int t = 0; t < T; ++t) {
+            rope_rows(kcur_ + t * NKV * HD, (int) NKV, pos + t * NH);
+            if (st_.kv_rot) {
+                fwht256_inplace_cuda(kcur_ + t * NKV * HD, NKV, cs);
+                fwht256_inplace_cuda(vcur_ + t * NKV * HD, NKV, cs);
+            }
+            if (st_.kv_q4)
+                kv_append_q4_step(st_.k_q4, st_.v_q4, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
+                                  vcur_ + t * NKV * HD, s, cs, &st_.host);
+            else if (st_.kv_int8)
+                kv_append_q8_step(st_.k_q, st_.v_q, st_.k_scale, st_.v_scale, st_.page_table, step + t * 4,
+                                  kcur_ + t * NKV * HD, vcur_ + t * NKV * HD, s, cs, &st_.host);
+            else
+                kv_append_step(st_.k_pool, st_.v_pool, st_.page_table, step + t * 4, kcur_ + t * NKV * HD,
+                               vcur_ + t * NKV * HD, s, cs, &st_.host);
+        }
+        if (!full) return true;
+        // ---- the query (q | gate per head), q norm, RoPE, dense attention over the cache, the sigmoid gate
+        native_mmvq(t_q, w_q, xq_, qfull_, (int) N, (int) (NH * 2 * HD), T, cs);
+        emit("mtp_Qcur_full", qfull_, T * NH * 2 * HD);
+        for (int t = 0; t < T; ++t) {
+            float* qc = qcur_ + t * NH * HD;
+            if (cudaMemcpy2DAsync(qc, (size_t) HD * 4, qfull_ + t * NH * 2 * HD, (size_t) HD * 2 * 4, (size_t) HD * 4,
+                                  (size_t) NH, cudaMemcpyDeviceToDevice, cs) != cudaSuccess) {
+                err = "mtp: q split failed";
+                return false;
+            }
+            native_qsa_rms_norm_weighted(qc, w_qn, qc, (int) HD, (int) NH, eps, cs);
+        }
+        emit("mtp_Qcur_normed", qcur_, T * NH * HD);
+        for (int t = 0; t < T; ++t) {
+            rope_rows(qcur_ + t * NH * HD, (int) NH, pos + t * NH);
+            if (st_.kv_rot) fwht256_inplace_cuda(qcur_ + t * NH * HD, NH, cs);
+        }
+        const QsaAttnPools pools = qsa_attn_pools(st_);
+        if (window_ > 0) window_ids(const_cast<int32_t*>(step), T, (int) window_, ident_, cap_, cs);
+        qsa_decode_attn_batch(qcur_, pools, ident_, step, cap_, s, attn_scratch_, attn_, T, cs);
+        if (st_.kv_rot) fwht256_inplace_cuda(attn_, (int64_t) T * NH, cs);
+        emit("mtp_attn_pregate", attn_, T * NH * HD);
+        for (int t = 0; t < T; ++t)
+            native_qsa_gate_apply(attn_ + t * NH * HD, qfull_ + t * NH * 2 * HD, attn32_ + t * NH * HD, (int) NH, (int) HD, cs);
+        native_quantize_q8_1(attn32_, xq_, (int) (NH * HD), T, cs);
+        native_mmvq(t_o, w_o, xq_, bo_, (int) (NH * HD), (int) N, T, cs);
+        emit("mtp_attn_out", bo_, T * N);
+        add_inplace(R_, bo_, (int64_t) T * N, cs);
+        emit("mtp_attn_residual", R_, T * N);
+        // ---- the MoE half: x = rms_norm(R) * post_attention_norm; the router (BF16 weight, F32 activation), top-k
+        // renormalised, the routed experts through the native kernels on the resident blobs, the gated shared expert
+        native_qsa_rms_norm_weighted(R_, w_pn, mixed_, (int) N, T, eps, cs);
+        emit("mtp_attn_post_norm", mixed_, T * N);
+        for (int t = 0; t < T; ++t)
+            bf16_gemv_fp32_mmvf(mixed_ + t * N, w_router, logits_ + t * NE, (int) N, (int) NE, cs);
+        emit("ffn_moe_logits", logits_, T * NE);
+        router_top10(logits_, T, (int) NE, (int) K, ids_, w_, cs);
+        emit("ffn_moe_topk", (const float*) ids_, T * K);
+        emit("ffn_moe_weights_norm", w_, T * K);
+        moe_group_resident(ids_, (int) (T * K), (int) K, experts_, exp_blob_, grp_ptr_, grp_start_, grp_counts_, hit_dst_,
+                           hit_slot_, cs);
+        native_quantize_q8_1(mixed_, xq_, (int) N, T, cs);
+        const NativeExpertLayout L = native_expert_layout(exp_gu_type_, exp_d_type_, N, g.n_ff);
+        native_expert_grouped(L, grp_ptr_, grp_start_, grp_counts_, hit_dst_, hit_slot_, (int64_t) T * K, (int64_t) T * K,
+                              xq_, hit_scratch_, parts_, cs);
+        const SForm none{};
+        const bool need_bf16_x = !shared_expert_native_bf16_enabled();
+        for (int t = 0; t < T; ++t) {
+            if (need_bf16_x) f32_to_bf16_bulk(mixed_ + t * N, x_bf16_, N, cs);
+            shared_expert(nullptr, nullptr, x_bf16_, none, nullptr, nullptr, nullptr, none, nullptr, nullptr, nullptr, none,
+                          nullptr, nullptr, nullptr, w_sgate, sh_scratch_, shared_ + t * N, N, g.n_ff_shexp, 32, cs,
+                          mixed_ + t * N, &nsw);
+        }
+        emit("mtp_ffn_shexp_gated", shared_, T * N);
+        for (int t = 0; t < T; ++t) {
+            if (native_moe_combine_enabled())
+                native_moe_combine(parts_ + (size_t) t * K * N, w_ + t * K, shared_ + t * N, y_ + t * N, N, K, cs);
+            else
+                moe_combine(parts_ + (size_t) t * K * N, w_ + t * K, shared_ + t * N, y_ + t * N, N, K, cs);
+        }
+        emit("mtp_ffn_out", y_, T * N);
+        add_inplace(R_, y_, (int64_t) T * N, cs);
+        emit("mtp_post_ffn", R_, T * N);
+        // ---- shared_head_norm and the main model's head (the draft subset when one is bound)
+        native_qsa_rms_norm_weighted(R_, w_shn, sample_, (int) N, T, eps, cs);
+        emit("mtp_shared_head_norm", sample_, T * N);
+        native_quantize_q8_1(sample_, xq_, (int) N, T, cs);
+        const bool sub = dhead_ != nullptr;
+        const int64_t nv = sub ? n_dvocab_ : n_vocab_;
+        native_mmvq(head_->type(), sub ? dhead_ : head_->weights(), xq_, head_logits_, (int) N, (int) nv, T, cs);
+        emit("result_output", head_logits_, T * nv);
+        if (coupled_rec_) {
+            coupled_draft_sample(head_logits_, (int) nv, sub ? dvocab_ : nullptr, sub ? dinv_ : nullptr, (int) n_vocab_,
+                                 cparams_, cring_, kCoupledHistCap, coupled_j_, step, cscratch_, out_ids_, probs_, cs);
+            return true;
+        }
+        SamplerParams sp;
+        sp.greedy = true;
+        sp.temperature = 0.0f;
+        sample_tokens(head_logits_, T, (int) nv, nullptr, 0, sp, out_ids_, cs);
+        row_top_prob(head_logits_, T, (int) nv, out_ids_, probs_, cs);
+        if (sub) map_ids(out_ids_, dvocab_, T, cs);
+    } catch (const std::exception& e) {
+        err = std::string("mtp: ") + e.what();
+        return false;
+    }
+    return true;
+}
+
+bool MtpDrafter::debug_row(const float* R_row, int32_t token, int64_t cell, int32_t pos, const DebugOpts& o,
+                           const SeamFn& seam, int32_t* top1, std::string& err) {
+    const OnDevice on_device(device_);
+    if (!qwen36()) { err = "mtp: debug_row is the Qwen3.6 drafter's forward"; return false; }
+    if (head_ == nullptr || wt_ == nullptr) { err = "mtp: bind() before debug_row"; return false; }
+    if (cell < 0 || cell >= cap_) { err = "mtp: debug_row cell " + std::to_string(cell) + " is outside the K/V (" + std::to_string(cap_) + " cells)"; return false; }
+    const int32_t st[4] = {(int32_t) cell, (int32_t) (cell + 1), (int32_t) ((cell + 1) / 4), (int32_t) (cell + 1)};
+    std::vector<int32_t> ps((size_t) g_->n_head, pos);
+    if (cudaStreamSynchronize(cs_) != cudaSuccess ||
+        cudaMemcpy(tok_, &token, sizeof token, cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemcpy(step_, st, sizeof st, cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemcpy(pos_, ps.data(), ps.size() * sizeof(int32_t), cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemcpy(Rin_, R_row, (size_t) g_->n_embd * sizeof(float), cudaMemcpyDeviceToDevice) != cudaSuccess) {
+        err = std::string("mtp: debug_row staging: ") + cudaGetErrorString(cudaGetLastError());
+        return false;
+    }
+    dbg_ = &o;
+    seam_ = seam ? &seam : nullptr;
+    const bool ok = record_forward_qwen36(1, 0, cs_, err);
+    dbg_ = nullptr;
+    seam_ = nullptr;
+    if (!ok) return false;
+    if (cudaStreamSynchronize(cs_) != cudaSuccess) { err = std::string("mtp: debug_row: ") + cudaGetErrorString(cudaGetLastError()); return false; }
+    if (top1 != nullptr && cudaMemcpy(top1, out_ids_, sizeof(int32_t), cudaMemcpyDeviceToHost) != cudaSuccess) { err = "mtp: debug_row: the draft readback failed"; return false; }
     return true;
 }
 

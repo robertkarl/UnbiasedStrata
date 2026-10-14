@@ -223,8 +223,31 @@ bool read_cgroup_memory_stat(const std::filesystem::path& path, uint64_t current
 
 namespace detail {
 
+namespace {
+uint64_t g_host_ram_cap = 0;
+bool host_available_memory_raw(HostMemory& m, const std::string& meminfo, const std::string& self_cgroup,
+                               const std::string& cgroup_root);
+}  // namespace
+
+void set_host_ram_cap(uint64_t bytes) { g_host_ram_cap = bytes; }
+uint64_t host_ram_cap() { return g_host_ram_cap; }
+
 bool host_available_memory(HostMemory& m, const std::string& meminfo, const std::string& self_cgroup,
                            const std::string& cgroup_root) {
+    if (!host_available_memory_raw(m, meminfo, self_cgroup, cgroup_root)) return false;
+    // --ram-cap: the machine this engine pretends to run on.  The cap is what that machine would report AVAILABLE,
+    // so "a 12 GiB machine" is --ram-cap 12 only if nothing else is resident; the 12 GiB VM 211 reports ~10 GiB
+    // available with its kernel and services, and emulating it exactly is --ram-cap 10.
+    if (g_host_ram_cap > 0) {
+        m.available = std::min(m.available, g_host_ram_cap);
+        m.cgroup_limit = std::min(m.cgroup_limit, g_host_ram_cap);
+    }
+    return m.available > 0;
+}
+
+namespace {
+bool host_available_memory_raw(HostMemory& m, const std::string& meminfo, const std::string& self_cgroup,
+                               const std::string& cgroup_root) {
     m = HostMemory{};
 #if defined(_WIN32)
     (void) meminfo; (void) self_cgroup; (void) cgroup_root;
@@ -320,6 +343,7 @@ bool host_available_memory(HostMemory& m, const std::string& meminfo, const std:
     return m.available > 0;
 #endif
 }
+}  // namespace
 
 }  // namespace detail
 
@@ -1710,6 +1734,8 @@ bool FileExpertSource::pin_cache_complement(
     complement_lock_off_ = lock_off;
     complement_lent_slots_ = lend ? n_slots - keep_from : 0;
     complement_ready_ = true;
+    complement_count_ = 0;
+    for (const uint64_t off : complement_offsets_) complement_count_ += off != kNoComplement;
     std::fprintf(stderr, "FileExpertSource: %s cache complement ready: resident %.2f GiB, pinned %.2f GiB%s%s\n",
                  complement_pinned_ ? "mapped pinned" : pin ? "locked resident" : "pageable resident",
                  (double) resident_bytes() / 1073741824.0, (double) pinned_bytes() / 1073741824.0,
@@ -1825,6 +1851,8 @@ const uint8_t* FileExpertSource::blob(int64_t layer, int64_t expert) {
     if (result != nullptr) ++reads_;
     return result;
 }
+
+int64_t FileExpertSource::complement_count() const { return complement_ready_ ? complement_count_ : 0; }
 
 bool FileExpertSource::pinned(int64_t layer, int64_t expert) const {
     if (!complement_ready_ || !complement_pinned_ || complement_host_ == nullptr || layer < 0 || expert < 0 ||
@@ -2001,6 +2029,23 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
     const ExpertLayout& lay = expert_layout();
     const bool native = lay.native;
     if (native && d.nact_multi.size() < (size_t) MAXT * kNativeActBytes) d.nact_multi.resize((size_t) MAXT * kNativeActBytes);
+    // The activation and output row width.  A native pack's is the layer's own (NativeFmt n_embd: 2048 for
+    // Qwen3.6-35B-A3B); the canonical Q2_0 pack's is H.  The window publishes its rows at that width, so reading
+    // token t at t * H or writing its row at i * H addressed the wrong token for every t > 0 and ran past the
+    // window's buffers (the single-token dispatch above refuses n_embd != H; this one took the width for granted).
+    if (native && (d.layers < 0 || (size_t) d.layers >= lay.fmt.size())) {
+        d.failed = true;
+        d.fail = "the expert pool was asked for a layer the pack does not have";
+        d.fail_layer = d.layers;
+        return;
+    }
+    const int64_t W = native ? lay.fmt[(size_t) d.layers].n_embd : (int64_t) H;
+    if (W <= 0 || W > (int64_t) H) {
+        d.failed = true;
+        d.fail = "the expert pool's activation buffers are compiled for at most a 2560-wide activation";
+        d.fail_layer = d.layers;
+        return;
+    }
     if (d.job_of.size() != (size_t) d.n_expert) d.job_of.assign((size_t) d.n_expert, (int16_t) -1);
     if (d.jobs_multi.size() < (size_t) (n_tok * k)) d.jobs_multi.resize((size_t) (MAXT * k));
     static const bool ptrace = std::getenv("STRATA_POOL_TRACE") != nullptr;
@@ -2143,11 +2188,11 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         for (int64_t t = 0; t < n_tok; ++t) {
             if (ep && std::all_of(kind + t * k, kind + (t + 1) * k, [](int32_t v) { return v >= 0; })) continue;
             if (native && strata::kernels::cpu::q2_native_kernels(lay.fmt[(size_t) d.layers].gu_type))   // a native Q2_0 pack: the Q2_0 kernels' activations
-                act_quant_any(x_f + (size_t) t * H, H, d.act_multi[(size_t) t]);
+                act_quant_any(x_f + (size_t) t * W, (int) W, d.act_multi[(size_t) t]);
             else if (native)
-                native_quant_act(lay.fmt[(size_t) d.layers], x_f + (size_t) t * H, d.nact_multi.data() + (size_t) t * kNativeActBytes);
+                native_quant_act(lay.fmt[(size_t) d.layers], x_f + (size_t) t * W, d.nact_multi.data() + (size_t) t * kNativeActBytes);
             else
-                act_quant_q8_1(x_f + (size_t) t * H, H, d.act_multi[(size_t) t]);
+                act_quant_q8_1(x_f + (size_t) t * W, (int) W, d.act_multi[(size_t) t]);
         }
     }
     const auto c2 = std::chrono::steady_clock::now();
@@ -2165,7 +2210,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
         for (int64_t j = 0; j < k; ++j) {
             const int64_t i = t * k + j;
             const int64_t e = ids[i];
-            float* row = out + (size_t) i * H;
+            float* row = out + (size_t) i * W;
             if (e < 0 || e >= d.n_expert) {
                 d.failed = true;
                 d.fail = "a routed expert id is out of range";
@@ -2181,7 +2226,7 @@ void expert_pool_dispatch_multi(ExpertDispatch& d, const float* x_f, const int32
                 // dec_batch: copy_rows_from_mapped_kernel already zeroes kind 0/1 rows on the GPU
                 if (!((kind[i] == 2 && d.peer != nullptr && d.peer->launched_direct()) ||
                       (gpu_zeroes_hits && (kind[i] == 0 || kind[i] == 1))))
-                    std::memset(row, 0, (size_t) H * sizeof(float));
+                    std::memset(row, 0, (size_t) W * sizeof(float));
                 continue;
             }
             ++d.cache_refused;

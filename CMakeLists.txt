@@ -231,6 +231,33 @@ if(STRATA_BUILD_TESTS)
   add_executable(gguf_split_test tests/core/gguf_split_test.cpp)
   target_link_libraries(gguf_split_test PRIVATE strata_artifact)
   add_test(NAME gguf_split_test COMMAND gguf_split_test)
+  # Qwen3.6 port, step 2: ModelGeometry from the model file's metadata (strata/core/model_geometry.hpp) on the
+  # synthetic qwen35moe GGUFs tools/qwen36_synth_gguf.py writes (python3 with numpy and the vendored gguf-py; the
+  # fixture test skips without them, and so does the test that needs the files)
+  add_executable(model_geometry_test tests/core/model_geometry_test.cpp)
+  target_link_libraries(model_geometry_test PRIVATE strata_artifact)
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  set(_q36_python "")
+  foreach(_cand ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/.venv/bin/python" /usr/bin/python3 python3)
+    if(_cand STREQUAL "" OR NOT _q36_python STREQUAL "")
+      continue()
+    endif()
+    execute_process(COMMAND ${_cand} -c "import numpy" OUTPUT_QUIET ERROR_QUIET RESULT_VARIABLE _q36_probe)
+    if(_q36_probe EQUAL 0)
+      set(_q36_python "${_cand}")
+    endif()
+  endforeach()
+  if(NOT _q36_python STREQUAL "")
+    add_test(NAME qwen36_synth_fixtures
+             COMMAND ${CMAKE_COMMAND} -DPYTHON=${_q36_python} -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/qwen36_synth -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/qwen36_synth_fixtures.cmake)
+    set_tests_properties(qwen36_synth_fixtures PROPERTIES FIXTURES_SETUP qwen36_synth_data)
+    add_test(NAME model_geometry_test COMMAND model_geometry_test ${CMAKE_CURRENT_BINARY_DIR}/qwen36_synth)
+    set_tests_properties(model_geometry_test PROPERTIES FIXTURES_REQUIRED qwen36_synth_data SKIP_RETURN_CODE 3)
+  else()
+    message(STATUS "STRATA tests: no python3 with numpy - the qwen36 synthetic fixtures and model_geometry_test are "
+                   "not registered")
+  endif()
 endif()
 
 # ---- strata_plan ----------------------------------------------------------
@@ -242,6 +269,12 @@ target_link_libraries(strata_plan INTERFACE strata_warnings)
 
 add_executable(strata-plan src/plan/plan_main.cpp)
 target_link_libraries(strata-plan PRIVATE strata_plan)
+if(STRATA_BUILD_TESTS)
+  # Qwen3.6 port, step 2: the VRAM planner's arithmetic (strata/plan/vram_plan.hpp) against the study's table 4.3
+  add_executable(vram_plan_test tests/core/vram_plan_test.cpp)
+  target_link_libraries(vram_plan_test PRIVATE strata_plan)
+  add_test(NAME vram_plan_test COMMAND vram_plan_test)
+endif()
 
 # ---- strata_core (GPU runtime) ---------------------------------------------
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
@@ -442,6 +475,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(expert_layout_test PRIVATE strata_engine)
     add_test(NAME expert_layout_test COMMAND expert_layout_test ${CMAKE_CURRENT_SOURCE_DIR}/tests/data/native_experts)
     set_tests_properties(expert_layout_test PROPERTIES TIMEOUT 60)
+    # the pool's native-pack rows at the layer's widths (Qwen3.6's 2048 x 512), not the canonical FF / H
+    add_executable(pool_native_widths_test tests/core/pool_native_widths_test.cpp)
+    target_link_libraries(pool_native_widths_test PRIVATE strata_engine)
+    add_test(NAME pool_native_widths_test COMMAND pool_native_widths_test)
+    set_tests_properties(pool_native_widths_test PROPERTIES TIMEOUT 120)
     # #326: a native pack's BF16 (--compat-bf16) PLE key stays in the arena; a quantized key row loads as before
     add_executable(native_dense_ple_key_test tests/core/native_dense_ple_key_test.cpp)
     target_link_libraries(native_dense_ple_key_test PRIVATE strata_engine)
@@ -456,6 +494,49 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_link_libraries(expert_cache_segmented_test PRIVATE strata_engine)
     add_test(NAME expert_cache_segmented_test COMMAND expert_cache_segmented_test)
     set_tests_properties(expert_cache_segmented_test PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+    # Qwen3.6 step 4: a real native pack loaded as `strata generate --native --pack` loads it (arena, native
+    # projections, head, embedding, check_all), given by STRATA_QWEN36_GGUF / STRATA_QWEN36_PACK; skipped without
+    # them (docs/qwen36-port/step4-pack.md)
+    add_executable(pack_load_check tests/core/pack_load_check.cpp)
+    target_link_libraries(pack_load_check PRIVATE strata_engine)
+    add_test(NAME pack_load_check COMMAND pack_load_check)
+    set_tests_properties(pack_load_check PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900)
+  endif()
+  # Qwen3.6 step 3: the plain block (hc = 1) composed by the engine against the oracle's dumps of the synthetic file
+  # (docs/qwen36-port/step3-block.md).  Needs the synthetic fixture (python3 with numpy) and a CUDA device.
+  if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA AND NOT _q36_python STREQUAL "")
+    add_executable(qwen36_block_test tests/cuda/qwen36_block_test.cpp)
+    target_link_libraries(qwen36_block_test PRIVATE strata_engine strata_artifact)
+    add_test(NAME qwen36_block_fixtures
+             COMMAND ${CMAKE_COMMAND} -DPYTHON=${_q36_python} -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                     -DSYNTH=${CMAKE_CURRENT_BINARY_DIR}/qwen36_synth -DOUT=${CMAKE_CURRENT_BINARY_DIR}/qwen36_block
+                     -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/qwen36_block_fixtures.cmake)
+    set_tests_properties(qwen36_block_fixtures PROPERTIES FIXTURES_SETUP qwen36_block_data
+                         FIXTURES_REQUIRED qwen36_synth_data TIMEOUT 300)
+    add_test(NAME qwen36_block_test COMMAND qwen36_block_test ${CMAKE_CURRENT_BINARY_DIR}/qwen36_synth
+                                            ${CMAKE_CURRENT_BINARY_DIR}/qwen36_block/o8)
+    set_tests_properties(qwen36_block_test PROPERTIES FIXTURES_REQUIRED "qwen36_synth_data;qwen36_block_data"
+                         SKIP_RETURN_CODE 77 TIMEOUT 120)
+  endif()
+  # Qwen3.6 step 4 (docs/qwen36-port/step4-runner.md): the verify window on a native pack of the synthetic model at
+  # the real per-layer geometry (tests/python/qwen36_runner_fixture.py: the GGUF, the pack through tools/iq_pack.py,
+  # the oracle's dumps), held to the oracle per row and position and to the single-token path bit for bit; then the
+  # streaming runner (the `strata` binary: chunked prefill, then windows teacher-forced to the oracle) through
+  # tests/python/qwen36_runner_check.py, with the 4 KB mutation gate.  Needs python3 with numpy and a CUDA device.
+  if(STRATA_BUILD_TESTS AND STRATA_ENABLE_CUDA AND NOT _q36_python STREQUAL "")
+    add_executable(qwen36_verify_test tests/cuda/qwen36_verify_test.cpp)
+    target_link_libraries(qwen36_verify_test PRIVATE strata_engine strata_artifact)
+    add_test(NAME qwen36_runner_fixtures
+             COMMAND ${_q36_python} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/python/qwen36_runner_fixture.py
+                     --out ${CMAKE_CURRENT_BINARY_DIR}/qwen36_runner)
+    set_tests_properties(qwen36_runner_fixtures PROPERTIES FIXTURES_SETUP qwen36_runner_data TIMEOUT 1800
+                         ENVIRONMENT "STRATA_GGUF_PY=${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/gguf-py")
+    add_test(NAME qwen36_verify_test COMMAND qwen36_verify_test ${CMAKE_CURRENT_BINARY_DIR}/qwen36_runner)
+    set_tests_properties(qwen36_verify_test PROPERTIES FIXTURES_REQUIRED qwen36_runner_data SKIP_RETURN_CODE 77 TIMEOUT 600)
+    add_test(NAME qwen36_runner_check
+             COMMAND ${_q36_python} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/python/qwen36_runner_check.py
+                     --strata $<TARGET_FILE:strata> --fixture ${CMAKE_CURRENT_BINARY_DIR}/qwen36_runner)
+    set_tests_properties(qwen36_runner_check PROPERTIES FIXTURES_REQUIRED qwen36_runner_data SKIP_RETURN_CODE 77 TIMEOUT 900)
   endif()
   if(STRATA_BUILD_CONVERSATION_TESTS)
     add_executable(conversation_snapshot_test src/core/conversation_snapshot_test.cpp)
@@ -651,17 +732,50 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(iq_multi_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(iq_multi_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME iq_multi_parity COMMAND iq_multi_parity)
-  # the prompt path's DeltaNet recurrence: gdn_rec_kh_kernel against gdn_rec_cols_pipe_kernel, bitwise (GPU,
+  # the prompt path's DeltaNet recurrence: gdn_rec_kh_kernel against gdn_rec_cols_pipe_kernel, bitwise, and the engine's
+  # launches against a host reference at both geometries with the negative controls (Qwen3.6 step 3; GPU,
   # synthetic, no model; --bench adds timings).  NVIDIA only: cp.async and the CUDA occupancy API (not on gfx906)
   if(STRATA_ENABLE_CUDA AND NOT STRATA_HIP_GFX906)
     add_executable(gdn_rec_parity src/prefill/gdn_rec_parity.cu)
-    target_link_libraries(gdn_rec_parity PRIVATE ${_strata_gpu_runtime_target})
+    target_link_libraries(gdn_rec_parity PRIVATE strata_prefill ${_strata_gpu_runtime_target})
     add_test(NAME gdn_rec_parity COMMAND gdn_rec_parity)
     # the prompt path's BF16 products against cuBLAS's own BF16 GEMM, within fp32 rounding (sm_7x runs them on the
     # FP16 tensor cores; GPU, synthetic, no model; --bench adds timings)
     add_executable(gemm_bf16_parity src/prefill/gemm_bf16_parity.cu)
     target_link_libraries(gemm_bf16_parity PRIVATE strata_prefill )
     add_test(NAME gemm_bf16_parity COMMAND gemm_bf16_parity)
+    # Qwen3.6 step 3: the prompt path at Qwen3.6's geometry against the oracle's dumps (docs/qwen36-port/step3-prefill.md).
+    # The fixtures (synthetic GGUFs at the real per-layer widths, the oracle's dumps and its rival readings) come from
+    # tests/python/qwen36_prefill_fixture.py with the numpy interpreter probed above; gdn3 is three DeltaNet layers,
+    # full4 adds the attention layer (exit 77 until the attention branch's G = 8 kernels are in the tree)
+    add_executable(prefill_qwen36_test tests/cuda/prefill_qwen36_test.cpp)
+    target_link_libraries(prefill_qwen36_test PRIVATE strata_prefill ${_strata_gpu_runtime_target})
+    if(NOT _iq_python STREQUAL "")
+      add_test(NAME prefill_qwen36_fixtures
+               COMMAND ${_iq_python} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/python/qwen36_prefill_fixture.py
+                       --out ${CMAKE_CURRENT_BINARY_DIR}/qwen36_prefill)
+      set_tests_properties(prefill_qwen36_fixtures PROPERTIES FIXTURES_SETUP qwen36_prefill_data SKIP_RETURN_CODE 3
+                           TIMEOUT 1800 ENVIRONMENT "STRATA_GGUF_PY=${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/gguf-py")
+      add_test(NAME prefill_qwen36_test COMMAND prefill_qwen36_test ${CMAKE_CURRENT_BINARY_DIR}/qwen36_prefill gdn3)
+      set_tests_properties(prefill_qwen36_test PROPERTIES FIXTURES_REQUIRED qwen36_prefill_data SKIP_RETURN_CODE 77 TIMEOUT 600)
+      add_test(NAME prefill_qwen36_attn_test COMMAND prefill_qwen36_test ${CMAKE_CURRENT_BINARY_DIR}/qwen36_prefill full4)
+      set_tests_properties(prefill_qwen36_attn_test PROPERTIES FIXTURES_REQUIRED qwen36_prefill_data SKIP_RETURN_CODE 77 TIMEOUT 600)
+    endif()
+    # Qwen3.6 step 4: the drafter (the -MTP file's nextn block through core/mtp.cpp, its experts on the native kernels)
+    # against the oracle's --mtp dumps, position by position, with the prompt-side pass (docs/qwen36-port/step4-drafter.md).
+    # The fixture (tests/python/qwen36_mtp_fixture.py) is the prompt-path trunk plus the nextn block, and the draft
+    # pack tools/mtp_qwen36_pack.py cuts from it; `qwen36_mtp_test --real ...` is the real-file arm (by hand).
+    add_executable(qwen36_mtp_test tests/cuda/qwen36_mtp_test.cpp)
+    target_link_libraries(qwen36_mtp_test PRIVATE strata_prefill strata_engine strata_artifact ${_strata_gpu_runtime_target})
+    if(NOT _iq_python STREQUAL "")
+      add_test(NAME qwen36_mtp_fixtures
+               COMMAND ${_iq_python} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/python/qwen36_mtp_fixture.py
+                       --out ${CMAKE_CURRENT_BINARY_DIR}/qwen36_mtp)
+      set_tests_properties(qwen36_mtp_fixtures PROPERTIES FIXTURES_SETUP qwen36_mtp_data SKIP_RETURN_CODE 3
+                           TIMEOUT 1800 ENVIRONMENT "STRATA_GGUF_PY=${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp/gguf-py")
+      add_test(NAME qwen36_mtp_test COMMAND qwen36_mtp_test ${CMAKE_CURRENT_BINARY_DIR}/qwen36_mtp)
+      set_tests_properties(qwen36_mtp_test PROPERTIES FIXTURES_REQUIRED qwen36_mtp_data SKIP_RETURN_CODE 77 TIMEOUT 900)
+    endif()
   endif()
   # native_expert_grouped's group stride and fused SwiGLU + q8_1, bitwise vs the launches before them (GPU, synthetic,
   # no model; --bench adds v1/new timings of a window's 48 calls in a graph)
@@ -686,6 +800,20 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(gdn_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(gdn_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME gdn_parity COMMAND gdn_parity --selftest)
+  # Qwen3.6 step 3: the decode GDN kernels (all four implementations), the router at 256/8 and the shared expert at
+  # 512 held to ref/qwen36.py's seams on the fixture cmake/qwen36_oracle_dumps.cmake writes (python3 with numpy and
+  # the vendored gguf-py; both tests skip without them)
+  add_executable(qwen36_seam_parity src/kernels/qwen36_seam_parity.cpp)
+  target_include_directories(qwen36_seam_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(qwen36_seam_parity PRIVATE strata_kernels strata_artifact ${_strata_gpu_runtime_target})
+  if(NOT _q36_python STREQUAL "")
+    add_test(NAME qwen36_oracle_dumps
+             COMMAND ${CMAKE_COMMAND} -DPYTHON=${_q36_python} -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/qwen36_oracle -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/qwen36_oracle_dumps.cmake)
+    set_tests_properties(qwen36_oracle_dumps PROPERTIES FIXTURES_SETUP qwen36_oracle_data)
+    add_test(NAME qwen36_seam_parity COMMAND qwen36_seam_parity ${CMAKE_CURRENT_BINARY_DIR}/qwen36_oracle)
+    set_tests_properties(qwen36_seam_parity PROPERTIES FIXTURES_REQUIRED qwen36_oracle_data SKIP_RETURN_CODE 77)
+  endif()
 
   add_executable(s2_gemv_q8_parity src/kernels/s2_gemv_q8_parity.cpp)
   target_include_directories(s2_gemv_q8_parity PRIVATE ${_strata_gpu_include_directories})
@@ -762,6 +890,31 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_include_directories(qsa_parity PRIVATE ${_strata_gpu_include_directories})
   target_link_libraries(qsa_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME qsa_parity COMMAND qsa_parity --selftest)
+
+  # Qwen3.6 step 3 (docs/qwen36-port/step3-attn.md): dense attention through the split-K decode kernel and the
+  # prompt kernel - G templated (2, 8, 12), a null ids as the identity, the bounded scratch, the sparse width refused
+  # for the dense model - against a host reference in every KV format, and the oracle's attention seams on
+  # the synthetic fixtures at head_dim 256 (cmake/qwen36_attn_fixtures.cmake; skips without python3 + numpy)
+  add_executable(qsa_dense_parity src/kernels/qsa_dense_parity.cpp)
+  target_include_directories(qsa_dense_parity PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(qsa_dense_parity PRIVATE strata_kernels strata_artifact ${_strata_gpu_runtime_target})
+  if(NOT _q36_python STREQUAL "")
+    add_test(NAME qwen36_attn_fixtures
+             COMMAND ${CMAKE_COMMAND} -DPYTHON=${_q36_python} -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                     -DOUT=${CMAKE_CURRENT_BINARY_DIR}/qwen36_attn -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/qwen36_attn_fixtures.cmake)
+    set_tests_properties(qwen36_attn_fixtures PROPERTIES FIXTURES_SETUP qwen36_attn_data)
+    add_test(NAME qsa_dense_parity COMMAND qsa_dense_parity --fixtures ${CMAKE_CURRENT_BINARY_DIR}/qwen36_attn)
+    set_tests_properties(qsa_dense_parity PROPERTIES FIXTURES_REQUIRED qwen36_attn_data SKIP_RETURN_CODE 77)
+  else()
+    add_test(NAME qsa_dense_parity COMMAND qsa_dense_parity)
+    set_tests_properties(qsa_dense_parity PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
+  # the decode attention's cost per call at a few depths (the before / after numbers of step3-attn.md); explicit
+  # ids only, so it builds against the kernel before step 3 as well
+  add_executable(qsa_attn_bench src/kernels/qsa_attn_bench.cpp)
+  target_include_directories(qsa_attn_bench PRIVATE ${_strata_gpu_include_directories})
+  target_link_libraries(qsa_attn_bench PRIVATE strata_kernels ${_strata_gpu_runtime_target})
+  # a benchmark, not a test: it asserts nothing, so it is a target and not a CTest entry
 
   # the QSA top-k the engine dispatches against the original kernel: identical ids on both sides of the register
   # kernel's reach, with tied and with equal scores (synthetic, no model)
@@ -994,6 +1147,23 @@ if(STRATA_NATIVE_EXPERTS)
   if(NOT EXISTS ${STRATA_GGML_DIR}/ggml/CMakeLists.txt)
     message(FATAL_ERROR "ggml was not found in ${STRATA_GGML_DIR}: run `git submodule update --init` first")
   endif()
+  # The chat-parser patch (patches/llama.cpp-qwen3-coder-any-argument-order.patch) is applied here at configure
+  # time, not only by `make build`: a tree built with cmake directly (the VMs, the agents' worktrees, a copied
+  # submodule without .git) otherwise runs upstream's required-first rule and drops a Qwen3.6 tool call whose
+  # required parameter is not written first (REGINA-104).
+  set(_strata_patch ${CMAKE_CURRENT_SOURCE_DIR}/patches/llama.cpp-qwen3-coder-any-argument-order.patch)
+  if(STRATA_GGML_DIR STREQUAL ${CMAKE_CURRENT_SOURCE_DIR}/third_party/llama.cpp AND EXISTS ${_strata_patch})
+    execute_process(COMMAND patch -p1 -N -R --dry-run -s -i ${_strata_patch} WORKING_DIRECTORY ${STRATA_GGML_DIR}
+                    RESULT_VARIABLE _strata_patched OUTPUT_QUIET ERROR_QUIET)
+    if(NOT _strata_patched EQUAL 0)
+      execute_process(COMMAND patch -p1 -N -s -i ${_strata_patch} WORKING_DIRECTORY ${STRATA_GGML_DIR}
+                      RESULT_VARIABLE _strata_patch_rc OUTPUT_VARIABLE _strata_patch_out ERROR_VARIABLE _strata_patch_out)
+      if(NOT _strata_patch_rc EQUAL 0)
+        message(FATAL_ERROR "could not apply ${_strata_patch} to ${STRATA_GGML_DIR}:\n${_strata_patch_out}")
+      endif()
+      message(STATUS "applied patches/llama.cpp-qwen3-coder-any-argument-order.patch to third_party/llama.cpp")
+    endif()
+  endif()
   add_subdirectory(${STRATA_GGML_DIR}/ggml ${CMAKE_BINARY_DIR}/ggml EXCLUDE_FROM_ALL)
   # part of strata_kernels_cpu (the pool calls these and they call its CPU probe: one library, so GNU ld's
   # one-pass static linking has no cycle to resolve)
@@ -1049,10 +1219,10 @@ if(STRATA_NATIVE_EXPERTS)
                 src/prefill/ggml_cuda_host.cu ${_strata_mmq}/quantize.cu)
     # q8_0: the drafter's matrices (E-9); STRATA_ORCA_Q4KS_MMQ adds q5_0 (#296, in _strata_mmq_types), and
     # STRATA_MMQ_KQUANTS q4_k q5_k q5_1, the experts of Unsloth's UD-Q4_K_XL (docs/UNSLOTH_Q4.md; the dispatch
-    # follows eddoursul/Strata 7706c1b)
+    # follows eddoursul/Strata 7706c1b), plus q6_k (Qwen3.6-35B-A3B UD-Q4_K_XL's layers 34, 38, 39)
     set(_strata_mmq_cuda_types ${_strata_mmq_types})
     if(STRATA_MMQ_KQUANTS)
-      list(APPEND _strata_mmq_cuda_types q4_k q5_k q5_1)
+      list(APPEND _strata_mmq_cuda_types q4_k q5_k q5_1 q6_k)
     endif()
     foreach(_t IN LISTS _strata_mmq_cuda_types)
       target_sources(strata_mmq PRIVATE ${_strata_mmq}/template-instances/mmq-instance-${_t}.cu)
@@ -1151,17 +1321,25 @@ if(STRATA_NATIVE_EXPERTS)
       # kernel for it before; q5_0/q5_0 (both roles Q5_0) is left out of this list since stacking the same
       # lower-precision format on both roles pushes the GPU path over this test's 3% threshold (quantization
       # noise, not a kernel bug -- see the PR).
-      foreach(_pair q4_K/q5_1 q4_K/q8_0 q5_K/q8_0 q8_0/q8_0 q4_K/q5_0 q5_0/q8_0)
+      foreach(_pair q4_K/q5_1 q4_K/q8_0 q5_K/q8_0 q8_0/q8_0 q4_K/q5_0 q5_0/q8_0 q6_K/q8_0)
         string(REPLACE "/" "_" _name "${_pair}")
         add_test(NAME native_expert_parity_${_name} COMMAND native_expert_parity --synthetic ${_pair})
         set_tests_properties(native_expert_parity_${_name} PROPERTIES TIMEOUT 120)
       endforeach()
+      # Qwen3.6-35B-A3B's expert pairs at its 2048 x 512 (docs/qwen36-port/step3-experts.md): UD-IQ3_XXS's
+      # IQ2_S/IQ3_XXS (37 layers) and IQ2_S/IQ4_XS (34, 38, 39); UD-Q4_K_XL's Q4_K/Q5_K (37), Q4_K/Q6_K (34, 38)
+      # and Q5_K/Q6_K (39).  The 256-value down types need n_ff % 256 == 0, which 512 has and 640 has not.
+      foreach(_pair iq2_s/iq3_xxs iq2_s/iq4_xs q4_K/q5_K q4_K/q6_K q5_K/q6_K)
+        string(REPLACE "/" "_" _name "${_pair}")
+        add_test(NAME native_expert_parity_qwen36_${_name} COMMAND native_expert_parity --geom 2048x512 --synthetic ${_pair})
+        set_tests_properties(native_expert_parity_qwen36_${_name} PROPERTIES TIMEOUT 120)
+      endforeach()
       add_test(NAME native_expert_parity_q5_1_min COMMAND native_expert_parity --q5_1-min)
       # #290: the BF16 token embedding (--embd-gguf) gathered and dequantized bit for bit
       add_test(NAME native_expert_parity_bf16_embd COMMAND native_expert_parity --bf16-embd)
-      # a pair without GPU kernels (Q6_K gate/up) is refused by native_expert_supported, not run
-      add_test(NAME native_expert_parity_refuses_q6_K COMMAND native_expert_parity --synthetic q6_K/q8_0)
-      set_tests_properties(native_expert_parity_refuses_q6_K PROPERTIES WILL_FAIL TRUE)
+      # a 256-value down type at Flash-Next's n_ff 640 is refused by native_expert_supported, not run
+      add_test(NAME native_expert_parity_refuses_q6_K_down_at_640 COMMAND native_expert_parity --synthetic q4_K/q6_K)
+      set_tests_properties(native_expert_parity_refuses_q6_K_down_at_640 PROPERTIES WILL_FAIL TRUE)
     endif()
   endif()
   # #296's real-weight checks (OrcaRouter Q4_K_S files; docs/ORCA_Q4_K_S.md) - test programs, not part of a release

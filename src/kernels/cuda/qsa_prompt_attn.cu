@@ -19,7 +19,8 @@ namespace strata::kernels {
 namespace {
 
 constexpr int HD = 256;           // head_dim
-constexpr int G = 12;             // query heads per KV head
+// `G`, the query heads per KV head, is a template parameter of every kernel below (2, 8, 12: qsa_attn_group); the
+// MMA tiles are 16 query rows, so every G <= 16 pads with zero rows exactly as 12 did.
 #ifndef D1_CH
 #define D1_CH 32
 #endif
@@ -102,7 +103,7 @@ struct Smem {
     long long row[CH];
 };
 
-template <int KV_MODE>
+template <int KV_MODE, int G>
 __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __restrict__ q, QsaAttnPools p,
                                                               const int32_t* __restrict__ ids,
                                                               const int32_t* __restrict__ steps, int n_kv_heads,
@@ -114,7 +115,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
     const int n_head = n_kv_heads * G;
     q += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
     attn += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
-    ids += (size_t) qi * cap;
+    if (ids != nullptr) ids += (size_t) qi * cap;
     const int n = __ldg(steps + (size_t) qi * kStepCount + kStepWidth);
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     const int gid = lane >> 2, tig = lane & 3;
@@ -149,7 +150,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
         if (t < CH) {
             long long r = -1;
             if (t < nh) {
-                const int cell = ids[c0 + t];
+                const int cell = ids != nullptr ? ids[c0 + t] : c0 + t;   // null ids: the identity (dense)
                 const long long page = (long long) p.page_table[cell / page_size];
                 r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
             }
@@ -415,7 +416,8 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_kernel(const float* __res
 #pragma unroll
     for (int j = 0; j < 8; ++j) {
         const int d = warp * 64 + j * 8 + 2 * tig;
-        *reinterpret_cast<float2*>(attn + (size_t) gid * HD + d) = make_float2(acc[j][0] * i0, acc[j][1] * i0);
+        if (gid < G)   // G < 8 (the fixtures' 4 / 2): rows past G belong to the next KV head's output
+            *reinterpret_cast<float2*>(attn + (size_t) gid * HD + d) = make_float2(acc[j][0] * i0, acc[j][1] * i0);
         if (gid + 8 < G)
             *reinterpret_cast<float2*>(attn + (size_t) (gid + 8) * HD + d) = make_float2(acc[j][2] * i1, acc[j][3] * i1);
     }
@@ -460,6 +462,7 @@ __device__ __forceinline__ void cp_async_wait1() {
 #endif
 }
 
+template <int G>
 __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __restrict__ q, QsaAttnPools p,
                                                                  const int32_t* __restrict__ ids,
                                                                  const int32_t* __restrict__ steps, int n_kv_heads,
@@ -471,7 +474,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
     const int n_head = n_kv_heads * G;
     q += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
     attn += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
-    ids += (size_t) qi * cap;
+    if (ids != nullptr) ids += (size_t) qi * cap;
     const int n = __ldg(steps + (size_t) qi * kStepCount + kStepWidth);
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     const int gid = lane >> 2, tig = lane & 3;
@@ -509,7 +512,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
 
     // the chunk pipeline: cells two chunks ahead, their pool rows one chunk ahead, the data (cp.async) one ahead
     const int n_chunks = (n + CH2 - 1) / CH2;
-    auto cell_of = [&](int c) -> int { return c < n ? __ldg(ids + c) : -1; };
+    auto cell_of = [&](int c) -> int { return c < n ? (ids != nullptr ? __ldg(ids + c) : c) : -1; };   // null ids: identity
     auto row_of = [&](int cell) -> long long {
         if (cell < 0) return -1;
         const long long page = (long long) __ldg(p.page_table + cell / page_size);
@@ -669,12 +672,14 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_i8_kernel(const float* __
 #pragma unroll
     for (int j = 0; j < 8; ++j) {
         const int d = dim0 + j * 8 + 2 * tig;
-        *reinterpret_cast<float2*>(attn + (size_t) gid * HD + d) = make_float2(acc[j][0] * i0, acc[j][1] * i0);
+        if (gid < G)   // G < 8 (the fixtures' 4 / 2): rows past G belong to the next KV head's output
+            *reinterpret_cast<float2*>(attn + (size_t) gid * HD + d) = make_float2(acc[j][0] * i0, acc[j][1] * i0);
         if (gid + 8 < G)
             *reinterpret_cast<float2*>(attn + (size_t) (gid + 8) * HD + d) = make_float2(acc[j][2] * i1, acc[j][3] * i1);
     }
 }
 
+template <int G>
 bool launch_i8(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
                const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st) {
     static bool attr[64] = {};   // the shared-memory opt-in is per device (a layer split runs this on several)
@@ -683,7 +688,7 @@ bool launch_i8(const float* q, const QsaAttnPools& pools, const int32_t* ids, co
     const int bytes = (int) sizeof(Smem2);
     if (dev < 0 || dev >= 64) return false;
     if (!attr[dev]) {
-        if (cudaFuncSetAttribute(prompt_attn_i8_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes) !=
+        if (cudaFuncSetAttribute(prompt_attn_i8_kernel<G>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes) !=
             cudaSuccess) {
             cudaGetLastError();
             return false;
@@ -693,8 +698,8 @@ bool launch_i8(const float* q, const QsaAttnPools& pools, const int32_t* ids, co
     const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
     for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
         const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;
-        prompt_attn_i8_kernel<<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, bytes, st>>>(
-            q + q0 * s.n_head * HD, pools, ids + q0 * cap, steps + q0 * kStepCount, (int) s.n_head_kv,
+        prompt_attn_i8_kernel<G><<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, bytes, st>>>(
+            q + q0 * s.n_head * HD, pools, ids != nullptr ? ids + q0 * cap : nullptr, steps + q0 * kStepCount, (int) s.n_head_kv,
             (int) s.page_size, scale_log2, attn + q0 * s.n_head * HD, (int) cap);
     }
     const cudaError_t e = cudaGetLastError();
@@ -705,7 +710,7 @@ bool launch_i8(const float* q, const QsaAttnPools& pools, const int32_t* ids, co
     return true;
 }
 
-template <int KV_MODE>
+template <int KV_MODE, int G>
 bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
             const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st) {
     static bool attr[64] = {};   // per device, as above
@@ -714,7 +719,7 @@ bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const
     const int bytes = (int) sizeof(Smem<KV_MODE>);
     if (dev < 0 || dev >= 64) return false;
     if (!attr[dev]) {
-        if (cudaFuncSetAttribute(prompt_attn_kernel<KV_MODE>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes) !=
+        if (cudaFuncSetAttribute(prompt_attn_kernel<KV_MODE, G>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes) !=
             cudaSuccess) {
             cudaGetLastError();
             return false;
@@ -724,8 +729,8 @@ bool launch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const
     const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
     for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
         const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;
-        prompt_attn_kernel<KV_MODE><<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, bytes, st>>>(
-            q + q0 * s.n_head * HD, pools, ids + q0 * cap, steps + q0 * kStepCount, (int) s.n_head_kv,
+        prompt_attn_kernel<KV_MODE, G><<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, bytes, st>>>(
+            q + q0 * s.n_head * HD, pools, ids != nullptr ? ids + q0 * cap : nullptr, steps + q0 * kStepCount, (int) s.n_head_kv,
             (int) s.page_size, scale_log2, attn + q0 * s.n_head * HD, (int) cap);
     }
     const cudaError_t e = cudaGetLastError();
@@ -789,7 +794,7 @@ struct Smem70 {
     long long row[CH];
 };
 
-template <int KV_MODE>
+template <int KV_MODE, int G>
 __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* __restrict__ q, QsaAttnPools p,
                                                                   const int32_t* __restrict__ ids,
                                                                   const int32_t* __restrict__ steps, int n_kv_heads,
@@ -801,7 +806,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
     const int n_head = n_kv_heads * G;
     q += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
     attn += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
-    ids += (size_t) qi * cap;
+    if (ids != nullptr) ids += (size_t) qi * cap;
     const int n = __ldg(steps + (size_t) qi * kStepCount + kStepWidth);
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     const int qp = (lane >> 2) & 3, jj = (lane & 3) + 4 * (lane >> 4);   // quad-pair, thread within it
@@ -842,7 +847,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
         if (t < CH) {
             long long r = -1;
             if (t < nh) {
-                const int cell = ids[c0 + t];
+                const int cell = ids != nullptr ? ids[c0 + t] : c0 + t;   // null ids: the identity (dense)
                 const long long page = (long long) p.page_table[cell / page_size];
                 r = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
             }
@@ -1083,7 +1088,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_v70_kernel(const float* _
         }
 }
 
-template <int KV_MODE>
+template <int KV_MODE, int G>
 bool launch70(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
               const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st) {
     static bool attr[64] = {};
@@ -1092,7 +1097,7 @@ bool launch70(const float* q, const QsaAttnPools& pools, const int32_t* ids, con
     const int bytes = (int) sizeof(Smem70<KV_MODE>);
     if (dev < 0 || dev >= 64) return false;
     if (!attr[dev]) {
-        if (cudaFuncSetAttribute(prompt_attn_v70_kernel<KV_MODE>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes) !=
+        if (cudaFuncSetAttribute(prompt_attn_v70_kernel<KV_MODE, G>, cudaFuncAttributeMaxDynamicSharedMemorySize, bytes) !=
             cudaSuccess) {
             cudaGetLastError();
             return false;
@@ -1102,8 +1107,8 @@ bool launch70(const float* q, const QsaAttnPools& pools, const int32_t* ids, con
     const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
     for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
         const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;
-        prompt_attn_v70_kernel<KV_MODE><<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, bytes, st>>>(
-            q + q0 * s.n_head * HD, pools, ids + q0 * cap, steps + q0 * kStepCount, (int) s.n_head_kv,
+        prompt_attn_v70_kernel<KV_MODE, G><<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, bytes, st>>>(
+            q + q0 * s.n_head * HD, pools, ids != nullptr ? ids + q0 * cap : nullptr, steps + q0 * kStepCount, (int) s.n_head_kv,
             (int) s.page_size, scale_log2, attn + q0 * s.n_head * HD, (int) cap);
     }
     const cudaError_t e = cudaGetLastError();
@@ -1114,7 +1119,7 @@ bool launch70(const float* q, const QsaAttnPools& pools, const int32_t* ids, con
     return true;
 }
 #else   // AMD, or a build without STRATA_EXPERIMENTAL_SM60: no m8n8k4 kernel (the caller keeps the old one)
-template <int KV_MODE>
+template <int KV_MODE, int G>
 bool launch70(const float*, const QsaAttnPools&, const int32_t*, const int32_t*, int64_t, const QsaShapes&, float*,
               int64_t, cudaStream_t) {
     return false;
@@ -1169,6 +1174,7 @@ __device__ __forceinline__ wh8 i8x8_to_h8(uint2 x) {   // exact: |code| <= 128
     return h;
 }
 
+template <int G>
 __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* __restrict__ q, QsaAttnPools p,
                                                                    const int32_t* __restrict__ ids,
                                                                    const int32_t* __restrict__ steps, int n_kv_heads,
@@ -1180,7 +1186,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
     const int n_head = n_kv_heads * G;
     q += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
     attn += (size_t) qi * n_head * HD + (size_t) kvh * G * HD;
-    ids += (size_t) qi * cap;
+    if (ids != nullptr) ids += (size_t) qi * cap;
     const int n = __ldg(steps + (size_t) qi * kStepCount + kStepWidth);
     const int t = threadIdx.x, lane = t & 31, warp = t >> 5;
     const int col = lane & 15, half = lane >> 4;   // fragment column / k half
@@ -1230,7 +1236,7 @@ __global__ void __launch_bounds__(THREADS) prompt_attn_wmma_kernel(const float* 
         // KV streaming left non-resident: masked as in the decode kernel)
         long long myrow = -1;
         if (c0 + lane < n) {
-            const int cell = __ldg(ids + c0 + lane);
+            const int cell = ids != nullptr ? __ldg(ids + c0 + lane) : c0 + lane;   // null ids: the identity
             const long long page = (long long) __ldg(p.page_table + cell / page_size);
             if (page >= 0) myrow = (page * n_kv_heads + kvh) * page_size + (cell % page_size);
         }
@@ -1384,13 +1390,14 @@ bool hip_wmma_usable() {
     return arch[dev] == 1;
 }
 
+template <int G>
 bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
                  const QsaShapes& s, float* attn, int64_t n_q, cudaStream_t st) {
     const float scale_log2 = 1.4426950408889634f / sqrtf((float) HD);
     for (int64_t q0 = 0; q0 < n_q; q0 += 65535) {
         const int64_t nb = n_q - q0 < 65535 ? n_q - q0 : 65535;
-        prompt_attn_wmma_kernel<<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, 0, st>>>(
-            q + q0 * s.n_head * HD, pools, ids + q0 * cap, steps + q0 * kStepCount, (int) s.n_head_kv,
+        prompt_attn_wmma_kernel<G><<<dim3((unsigned) nb, (unsigned) s.n_head_kv), THREADS, 0, st>>>(
+            q + q0 * s.n_head * HD, pools, ids != nullptr ? ids + q0 * cap : nullptr, steps + q0 * kStepCount, (int) s.n_head_kv,
             (int) s.page_size, scale_log2, attn + q0 * s.n_head * HD, (int) cap);
     }
     const cudaError_t e = cudaGetLastError();
@@ -1401,6 +1408,51 @@ bool launch_wmma(const float* q, const QsaAttnPools& pools, const int32_t* ids, 
     return true;
 }
 #endif
+
+template <int G>
+bool dispatch(const float* q, const QsaAttnPools& pools, const int32_t* ids, const int32_t* steps, int64_t cap,
+              const QsaShapes& s, float* attn, int64_t n_q, void* stream, bool volta, bool turing) {
+#if defined(__HIPCC__)
+    // the tensor-core kernels are compiled out on AMD (its major version is not a CUDA sm); RDNA4 has its own int8-KV
+    // matrix-core kernel, opt-in (STRATA_HIP_WMMA=1); everything else keeps the old kernel
+    (void) turing; (void) volta;
+    if (pools.k_q != nullptr && pools.v_q != nullptr && pools.k_scale != nullptr && pools.v_scale != nullptr &&
+        pools.k_q4 == nullptr && pools.v_q4 == nullptr && s.head_dim == HD && s.n_head == (int64_t) G * s.n_head_kv &&
+        cap > 0 && steps && pools.page_table && hip_wmma_usable())
+        return launch_wmma<G>(q, pools, ids, steps, cap, s, attn, n_q, (cudaStream_t) stream);
+    return false;
+#endif
+    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !steps || !pools.page_table)
+        return false;
+    cudaStream_t st = (cudaStream_t) stream;
+    if (pools.k_q4 != nullptr) {   // Q4_0 K and V (--kv q4_0): mode 4.  STRATA_PROMPT_ATTN_Q4=0: the old kernel (A/B)
+        static const bool q4_off = [] {
+            const char* v = std::getenv("STRATA_PROMPT_ATTN_Q4");
+            return v != nullptr && v[0] == '0';
+        }();
+        // sm_80+ only: on Turing mode 4 would run as pairs of m16n8k8 MMAs, which no parity run has checked yet
+        if (q4_off || turing || pools.v_q4 == nullptr) return false;
+        return launch<4, G>(q, pools, ids, steps, cap, s, attn, n_q, st);
+    }
+    if (pools.k_q != nullptr && pools.v_q4 != nullptr) {   // hybrid K8V4: int8 K + dequantized-q4 V
+        if (!pools.k_scale) return false;
+        if (volta) return launch70<3, G>(q, pools, ids, steps, cap, s, attn, n_q, st);
+        return launch<3, G>(q, pools, ids, steps, cap, s, attn, n_q, st);
+    }
+    if (pools.k_q != nullptr) {
+        if (!pools.v_q || !pools.k_scale || !pools.v_scale) return false;
+        // STRATA_PROMPT_ATTN_V1=1 (debug): the first version, same accuracy, another summation order - the control
+        // for how far the model amplifies an FP32-level change.  Turing always takes it: v2's cp.async does not
+        // exist before sm_80.
+        static const bool v1 = std::getenv("STRATA_PROMPT_ATTN_V1") != nullptr;
+        if (volta) return launch70<1, G>(q, pools, ids, steps, cap, s, attn, n_q, st);
+        if (v1 || turing) return launch<1, G>(q, pools, ids, steps, cap, s, attn, n_q, st);
+        return launch_i8<G>(q, pools, ids, steps, cap, s, attn, n_q, st);
+    }
+    if (!pools.k_pool || !pools.v_pool) return false;
+    if (volta) return launch70<0, G>(q, pools, ids, steps, cap, s, attn, n_q, st);
+    return launch<0, G>(q, pools, ids, steps, cap, s, attn, n_q, st);
+}
 
 }  // namespace
 
@@ -1434,46 +1486,14 @@ bool qsa_prompt_attn_batch(const float* q, const QsaAttnPools& pools, const int3
         volta = cc[dev] < 75;     // sm_70: the m8n8k4 kernel (STRATA_PA_VOLTA); STRATA_QSA_WARP=1 still forces the old one
         turing = cc[dev] < 80;
     }
-#if defined(__HIPCC__)
-    // the tensor-core kernels are compiled out on AMD (its major version is not a CUDA sm); RDNA4 has its own int8-KV
-    // matrix-core kernel, opt-in (STRATA_HIP_WMMA=1); everything else keeps the old kernel
-    (void) turing; (void) volta;
-    if (pools.k_q != nullptr && pools.v_q != nullptr && pools.k_scale != nullptr && pools.v_scale != nullptr &&
-        pools.k_q4 == nullptr && pools.v_q4 == nullptr && s.head_dim == HD && s.n_head == (int64_t) G * s.n_head_kv &&
-        cap > 0 && ids && steps && pools.page_table && hip_wmma_usable())
-        return launch_wmma(q, pools, ids, steps, cap, s, attn, n_q, (cudaStream_t) stream);
+    // Qwen3.6: the query heads per KV head from the geometry (2, 8, 12); any other ratio falls back to the decode
+    // kernel, which refuses it by name.
+    char why[256];
+    const int G = qsa_attn_group(s, why, sizeof why);
+    if (G == 12) return dispatch<12>(q, pools, ids, steps, cap, s, attn, n_q, stream, volta, turing);
+    if (G == 8) return dispatch<8>(q, pools, ids, steps, cap, s, attn, n_q, stream, volta, turing);
+    if (G == 2) return dispatch<2>(q, pools, ids, steps, cap, s, attn, n_q, stream, volta, turing);
     return false;
-#endif
-    if (s.head_dim != HD || s.n_head != (int64_t) G * s.n_head_kv || cap <= 0 || !ids || !steps || !pools.page_table)
-        return false;
-    cudaStream_t st = (cudaStream_t) stream;
-    if (pools.k_q4 != nullptr) {   // Q4_0 K and V (--kv q4_0): mode 4.  STRATA_PROMPT_ATTN_Q4=0: the old kernel (A/B)
-        static const bool q4_off = [] {
-            const char* v = std::getenv("STRATA_PROMPT_ATTN_Q4");
-            return v != nullptr && v[0] == '0';
-        }();
-        // sm_80+ only: on Turing mode 4 would run as pairs of m16n8k8 MMAs, which no parity run has checked yet
-        if (q4_off || turing || pools.v_q4 == nullptr) return false;
-        return launch<4>(q, pools, ids, steps, cap, s, attn, n_q, st);
-    }
-    if (pools.k_q != nullptr && pools.v_q4 != nullptr) {   // hybrid K8V4: int8 K + dequantized-q4 V
-        if (!pools.k_scale) return false;
-        if (volta) return launch70<3>(q, pools, ids, steps, cap, s, attn, n_q, st);
-        return launch<3>(q, pools, ids, steps, cap, s, attn, n_q, st);
-    }
-    if (pools.k_q != nullptr) {
-        if (!pools.v_q || !pools.k_scale || !pools.v_scale) return false;
-        // STRATA_PROMPT_ATTN_V1=1 (debug): the first version, same accuracy, another summation order - the control
-        // for how far the model amplifies an FP32-level change.  Turing always takes it: v2's cp.async does not
-        // exist before sm_80.
-        static const bool v1 = std::getenv("STRATA_PROMPT_ATTN_V1") != nullptr;
-        if (volta) return launch70<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
-        if (v1 || turing) return launch<1>(q, pools, ids, steps, cap, s, attn, n_q, st);
-        return launch_i8(q, pools, ids, steps, cap, s, attn, n_q, st);
-    }
-    if (!pools.k_pool || !pools.v_pool) return false;
-    if (volta) return launch70<0>(q, pools, ids, steps, cap, s, attn, n_q, st);
-    return launch<0>(q, pools, ids, steps, cap, s, attn, n_q, st);
 }
 
 }  // namespace strata::kernels

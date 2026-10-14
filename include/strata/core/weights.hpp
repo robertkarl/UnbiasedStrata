@@ -130,6 +130,9 @@ public:
 
     const WeightRef* find(const std::string& name) const;
     const std::map<std::string, WeightRef>& all() const { return table_; }
+    /// A test seam: one row, as `load` would have made it (the Qwen3.6 prefill harness builds a table from a synthetic
+    /// GGUF without a pack).  The caller owns the device memory the row points at.
+    void set(const std::string& name, const WeightRef& ref) { table_[name] = ref; }
     const LoadReport& report() const { return report_; }
 
 private:

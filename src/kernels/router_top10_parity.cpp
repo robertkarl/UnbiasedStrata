@@ -9,6 +9,11 @@
 // logit distributions including ties (where the "smallest index wins" rule is the only thing that decides) and
 // near-ties (where a float difference decides).  It also asserts that the 2**-14 CLAMP CANNOT TRIGGER for this
 // model's geometry - see below - so the absence of a clamp test is a proven fact rather than an omission.
+//
+// TWO GEOMETRIES: Flash-Next's 512 experts / top-10 and Qwen3.6-35B-A3B's 256 / top-8 (docs/QWEN36-35B-A3B.md 3.4).
+// The kernel is generic in both (`router_top10.hpp`: n_expert <= 512, k <= 32), so this is the same five fixtures at
+// the second shape, plus a tie of EXACTLY k experts (the whole top-k decided by index order and nothing else).  The
+// seams `ffn_moe_topk-N` / `ffn_moe_weights_norm-N` against the oracle at 256/8 are in qwen36_seam_parity.
 #include "strata/kernels/router_top10.hpp"
 
 #include <cuda_runtime.h>
@@ -116,51 +121,65 @@ int main(int argc, char** argv) {
         else { std::fprintf(stderr, "usage: router_top10_parity [--selftest]\n"); return 2; }
     }
 
-    const int NE = 512;          // the real n_expert
-    const int K = 10;            // the real top-k
     const int NT = 64;
     std::mt19937 rng(2024);
     std::normal_distribution<float> gauss(0.0f, 1.0f);
     int bad = 0;
+    // Flash-Next (qwen4exp): 512 experts, top-10.  Qwen3.6-35B-A3B (qwen35moe): 256 experts, top-8.
+    const int geometries[2][2] = {{512, 10}, {256, 8}};
+    for (const auto& geo : geometries) {
+        const int NE = geo[0], K = geo[1];
+        std::printf("== %d experts, top-%d\n", NE, K);
 
-    // ---- random logits
-    std::vector<float> a((size_t) NT * NE);
-    for (auto& v : a) v = gauss(rng);
-    bad += run_case("random normal", a, NT, NE, K, 1e-5);
+        // ---- random logits
+        std::vector<float> a((size_t) NT * NE);
+        for (auto& v : a) v = gauss(rng);
+        bad += run_case("random normal", a, NT, NE, K, 1e-5);
 
-    // ---- ALL-EQUAL logits: every expert ties, so the "smallest index wins" rule is the ONLY thing deciding
-    // the ids.  An unstable sort or a >= comparison in the maximum scan fails this and passes everything else.
-    std::vector<float> b((size_t) NT * NE, 0.5f);
-    bad += run_case("all equal (ties)", b, NT, NE, K, 1e-5);
+        // ---- ALL-EQUAL logits: every expert ties, so the "smallest index wins" rule is the ONLY thing deciding
+        // the ids.  An unstable sort or a >= comparison in the maximum scan fails this and passes everything else.
+        std::vector<float> b((size_t) NT * NE, 0.5f);
+        bad += run_case("all equal (ties)", b, NT, NE, K, 1e-5);
 
-    // ---- a few exact ties among otherwise distinct values
-    std::vector<float> c((size_t) NT * NE);
-    for (int t = 0; t < NT; ++t) {
-        for (int e = 0; e < NE; ++e) c[(size_t) t * NE + e] = (e < 12) ? 2.0f : gauss(rng);
+        // ---- a few exact ties among otherwise distinct values, WIDER than k: which k of the 12 is index order
+        std::vector<float> c((size_t) NT * NE);
+        for (int t = 0; t < NT; ++t) {
+            for (int e = 0; e < NE; ++e) c[(size_t) t * NE + e] = (e < 12) ? 2.0f : gauss(rng);
+        }
+        bad += run_case("12-way exact tie", c, NT, NE, K, 1e-5);
+
+        // ---- a tie of EXACTLY k experts at the top, scattered through the index range (not the first k): the whole
+        // selection is the tie, in index order, and every weight is the same 1/k
+        std::vector<float> ck((size_t) NT * NE);
+        for (int t = 0; t < NT; ++t) {
+            for (int e = 0; e < NE; ++e) ck[(size_t) t * NE + e] = gauss(rng) - 4.0f;
+            for (int i = 0; i < K; ++i) ck[(size_t) t * NE + (size_t) ((t * 7 + i * (NE / K)) % NE)] = 3.0f;
+        }
+        char name[32];
+        std::snprintf(name, sizeof name, "%d-way (= k) exact tie", K);
+        bad += run_case(name, ck, NT, NE, K, 1e-5);
+
+        // ---- one dominant expert: the top-1 must be that expert and its weight must dominate
+        std::vector<float> d((size_t) NT * NE, 0.0f);
+        for (int t = 0; t < NT; ++t) d[(size_t) t * NE + (t % NE)] = 20.0f;
+        bad += run_case("dominant expert", d, NT, NE, K, 1e-5);
+
+        // ---- THE CLAMP CANNOT TRIGGER, and that is provable rather than untested.
+        // The sum of the top k of a probability vector over n outcomes is at least k/n (the minimum is the uniform
+        // distribution).  At 512/10 k/n = 0.01953125, 320x the 2**-14 = 6.1035e-05 clamp; at 256/8 it is 0.03125,
+        // 512x.  No input whatsoever can make either model's renormalisation clamp - not an extreme one, not an
+        // adversarial one.  Asserting the bound is worth more than a test that cannot reach it.
+        const double min_possible = (double) K / (double) NE;
+        std::printf("  %-26s top-%d sum >= k/n = %.5f, clamp is %.3e -> margin %.0fx  %s\n", "clamp reachability",
+                    K, min_possible, RENORM_CLAMP, min_possible / RENORM_CLAMP,
+                    min_possible > RENORM_CLAMP ? "(CLAMP IS UNREACHABLE, asserted)" : "*** REACHABLE ***");
+        if (min_possible <= RENORM_CLAMP) {
+            std::fprintf(stderr, "the clamp CAN trigger, so it needs a test\n");
+            ++bad;
+        }
     }
-    bad += run_case("12-way exact tie", c, NT, NE, K, 1e-5);
 
-    // ---- one dominant expert: the top-1 must be that expert and its weight must dominate
-    std::vector<float> d((size_t) NT * NE, 0.0f);
-    for (int t = 0; t < NT; ++t) d[(size_t) t * NE + (t % NE)] = 20.0f;
-    bad += run_case("dominant expert", d, NT, NE, K, 1e-5);
-
-    // ---- THE CLAMP CANNOT TRIGGER, and that is provable rather than untested.
-    // The sum of the top k of a probability vector over n outcomes is at least k/n (the minimum is the uniform
-    // distribution).  Here k/n = 10/512 = 0.01953125, which is 320x the 2**-14 = 6.1035e-05 clamp, so no input
-    // whatsoever can make this model's renormalisation clamp - not an extreme one, not an adversarial one.
-    // Asserting the bound is worth more than a test that cannot reach it.
-    const double min_possible = (double) K / (double) NE;
-    std::printf("  %-26s top-%d sum >= k/n = %.5f, clamp is %.3e -> margin %.0fx  %s\n", "clamp reachability",
-                K, min_possible, RENORM_CLAMP, min_possible / RENORM_CLAMP,
-                min_possible > RENORM_CLAMP ? "(CLAMP IS UNREACHABLE, asserted)" : "*** REACHABLE ***");
-    if (min_possible <= RENORM_CLAMP) {
-        std::fprintf(stderr, "the clamp CAN trigger, so it needs a test\n");
-        ++bad;
-    }
-
-    std::printf("\nrouter_top10: %d failures over 4 distributions x %d tokens x %d experts, top-%d\n", bad, NT, NE,
-                K);
+    std::printf("\nrouter_top10: %d failures over 5 distributions x %d tokens at 512/10 and 256/8\n", bad, NT);
     if (bad) return 1;
     if (selftest) std::printf("router_top10_parity OK\n");
     return 0;

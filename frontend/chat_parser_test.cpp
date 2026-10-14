@@ -66,7 +66,67 @@ int main(int argc, char** argv) {
         assert(parsed.tool_calls[0].name == "read");
         assert(parsed.tool_calls[0].arguments.find("\"path\":\"/tmp/a.txt\"") != std::string::npos);
     }
+    // Streaming (REGINA-110): the response's text grows a UTF-8 character at a time, as it does token by token
+    // in run(); the answer must be published as it grows, not in one piece at the end, and the pieces must add
+    // up to the parse of the whole message.  Tool calls are published once, complete.
+    struct StreamCase { const char* name; bool thinking; bool tools; std::string output; size_t calls; };
+    const std::string call_ls = "<tool_call>\n<function=bash>\n<parameter=command>\nls -l \"a b\" | head -n 3\n"
+                                "</parameter>\n</function>\n</tool_call>";
+    const std::string answer = "A lighthouse stands on the cape: caf\xC3\xA9 lights, 2 < 3 and <b>bold</b>.\n\n"
+                               "```json\n{\"a\": [1, 2], \"s\": \"x\\ny\"}\n```\nIt writes <tool and <function= as text.";
+    const StreamCase cases[] = {
+        {"reasoning then answer", true, false, "The user asks.\nTwo steps.\n</think>\n\n" + answer, 0},
+        {"answer, thinking off", false, false, answer, 0},
+        {"answer, tools declared", true, true, "No tool is needed.\n</think>\n\n" + answer, 0},
+        {"answer, tools declared, thinking off", false, true, answer, 0},
+        {"text then a tool call", true, true, "List first.\n</think>\n\nI will list the files.\n\n" + call_ls, 1},
+        {"a tool call alone", false, true, call_ls, 1},
+        {"two tool calls", true, true, "Both.\n</think>\n\n" + call_ls + "\n" + call_ls, 2},
+    };
+    for (const StreamCase& c : cases) {
+        auto body = common_json::parse_no_throw(R"({"messages":[{"role":"user","content":"Describe a lighthouse."}],
+            "stream":true})");
+        if (c.tools) body["tools"] = request.at("tools");
+        body["chat_template_kwargs"] = common_json::object();
+        body["chat_template_kwargs"]["enable_thinking"] = c.thinking;
+        Prepared prepared;
+        assert(server.prepare(body, prepared, error));
+        const common_chat_msg whole = common_chat_parse(c.output, false, prepared.parser);
+        StreamParse parse;
+        std::string content, reasoning;
+        size_t content_deltas = 0, reasoning_deltas = 0, call_deltas = 0, steps = 0;
+        bool calls_only_at_end = true;
+        auto take = [&](const std::vector<common_chat_msg_diff>& diffs, bool partial) {
+            for (const auto& d : diffs) {
+                if (!d.content_delta.empty()) { content += d.content_delta; ++content_deltas; }
+                if (!d.reasoning_content_delta.empty()) { reasoning += d.reasoning_content_delta; ++reasoning_deltas; }
+                if (d.tool_call_index != std::string::npos) { ++call_deltas; if (partial) calls_only_at_end = false; }
+            }
+        };
+        for (size_t n = 1; n < c.output.size(); ++n) {
+            if (utf8_complete_prefix(c.output.substr(0, n)) != n) continue;
+            take(parse.step(c.output.substr(0, n), true, prepared.parser), true);
+            ++steps;
+        }
+        take(parse.step(c.output, false, prepared.parser), false);
+        std::printf("stream case '%s': %zu steps, %zu reasoning deltas, %zu content deltas, %zu tool-call deltas\n",
+                    c.name, steps, reasoning_deltas, content_deltas, call_deltas);
+        if (std::getenv("STREAM_TEST_VERBOSE"))
+            std::printf("  whole content [%s]\n  streamed      [%s]\n", whole.content.c_str(), content.c_str());
+        assert(reasoning == whole.reasoning_content);
+        // the streamed answer is the whole one; before a tool call it may keep the white space the parser trims
+        assert(content.compare(0, whole.content.size(), whole.content) == 0);
+        assert(content.find_first_not_of(" \n", whole.content.size()) == std::string::npos);
+        assert(whole.content.size() < 20 || content_deltas * 2 >= whole.content.size());
+        assert(whole.reasoning_content.size() < 10 || reasoning_deltas * 2 >= whole.reasoning_content.size());
+        assert(whole.tool_calls.size() == c.calls && parse.msg.tool_calls.size() == c.calls);
+        assert(calls_only_at_end && call_deltas == c.calls);
+        for (size_t i = 0; i < c.calls; ++i) {
+            assert(parse.msg.tool_calls[i].arguments == "{\"command\":\"ls -l \\\"a b\\\" | head -n 3\"}");
+            assert(!parse.msg.tool_calls[i].id.empty());
+        }
+    }
     llama_model_free(server.model);
     std::puts("PASS: omitted parallel_tool_calls uses the model capability; explicit false remains honored; "
-              "tool arguments parse in any order");
+              "tool arguments parse in any order; the answer streams as it grows and tool calls arrive whole");
 }

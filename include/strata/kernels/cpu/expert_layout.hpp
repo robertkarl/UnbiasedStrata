@@ -74,7 +74,12 @@ void act_quant_any(const float* x, int n, ActQ& a);
 const ExpertLayout& expert_layout();
 /// Reads `<pack_dir>/native_experts.txt` when it exists (a native pack), else sets the canonical layout.
 /// Versions up to kExpertLayoutVersion are read; a newer one is refused (a newer packer wrote it).
-bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, std::string& err);
+/// `n_embd` / `n_ff` are the MODEL's widths (ModelGeometry, read from the model file): each layer's `NativeFmt` is
+/// built with them and its byte count checked against the pack's blob size, so a pack of another geometry is refused
+/// here by its numbers.  Until Phase 2 step 2 of the Qwen3.6 port this passed the compile-time 2560/640
+/// (geometry-inventory.md row 108), which refused every 2048/512 pack as "blob is X B but its formats make Y".
+bool expert_layout_load(const std::string& pack_dir, int64_t n_layers, int64_t n_expert, int64_t n_embd, int64_t n_ff,
+                        std::string& err);
 /// The newest native_experts.txt this engine reads.  v4 = v3 plus the per-role shard column `gate,up,down`,
 /// written only when some layer's roles are in different shards (every other pack stays v3, byte for byte).
 inline constexpr int kExpertLayoutVersion = 4;

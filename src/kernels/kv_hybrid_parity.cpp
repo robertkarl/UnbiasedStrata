@@ -333,8 +333,18 @@ int main() {
             // AMD: the tensor-core prompt path is CUDA-only, so it refuses every pool and the old kernel runs
             std::printf("[5/5] qsa_prompt_attn mode 3: PASS (refused on HIP - the old kernel runs)\n");
 #else
-            std::printf("[5/5] qsa_prompt_attn mode 3: FAIL (refused the hybrid pools)\n");
-            g_fail = 1;
+            // below sm_70 the host refuses by design (no mma.sync) and prefill takes the batched decode kernel,
+            // which case [4/4] above holds to the same reference: the engine's own fallback, not a failure
+            int dev = 0, major = 0;
+            ck(cudaGetDevice(&dev), "device");
+            ck(cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, dev), "cc");
+            if (major < 7) {
+                std::printf("[5/5] qsa_prompt_attn mode 3: SKIP (sm_%d has no tensor-core prompt kernel; prefill runs the "
+                            "batched decode kernel of [4/4] there)\n", major);
+            } else {
+                std::printf("[5/5] qsa_prompt_attn mode 3: FAIL (refused the hybrid pools)\n");
+                g_fail = 1;
+            }
 #endif
         } else {
             k::fwht256_inplace_cuda(d_at4, QH, nullptr);

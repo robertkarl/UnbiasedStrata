@@ -1,4 +1,5 @@
-// src/kernels/gdn_parity.cpp - P2.S2's test for the GDN recurrence, the conv and the two norms.
+// src/kernels/gdn_parity.cpp - P2.S2's test for the GDN recurrence, the conv and the two norms; Qwen3.6 step 3
+// re-pins it at 32 value heads with the SiLU output gate.
 //
 // `ref/gdn.py` carries eleven PROPERTY checks, several of which exist because a rival reading of the SOURCE
 // produces well-formed output.  The four that the kernels here can be wrong about are re-pinned below, each
@@ -15,10 +16,30 @@
 //      differs by sqrt(S) = 11.3x at S = 128.  `ref/gdn.py` PROPERTY 1 instruments the derivation, so it is
 //      not taken on trust there either.
 //
+// and the fifth, the one numerical difference between the two models this engine serves (docs/QWEN36-35B-A3B.md
+// 3.2, geometry-inventory.md row 39):
+//
+//   5. THE OUTPUT GATE.  Flash-Next (`qwen4exp`, 16 k-heads / 48 v-heads) closes the layer with
+//      `rms_norm(o) * ssm_norm * sigmoid(z)`; Qwen3.6 (`qwen35moe`, 16 / 32) with `... * SiLU(z)`.  Both are
+//      well-formed and the same size; the oracle's negative control puts them 1.07 relative L1 apart at
+//      `final_output-0`.  Every output kernel takes the choice as `GdnGate`; here each geometry is run with ITS
+//      gate against a reference of its gate, and then the kernel is run with the OTHER gate and required to
+//      differ from that reference by more than 5% - the wrong reading fails through the kernel itself, not
+//      only on the host.
+//
 // It also checks the STATE LAYOUT, which is the one place these kernels intentionally differ from the
 // reference: (S, h_v, S) with j fastest instead of (S, S, h_v).  A layout mix-up is silent, so the state is
 // filled with a value that encodes its own coordinates.
+//
+// Geometries: the recurrence and the output kernels run at BOTH head counts, 16/48 (VPK 3) and 16/32 (VPK 2),
+// through all four implementations - the legacy `gdn_step` + `gdn_out_norm`, the pinned `native_gdn_step` +
+// `native_gdn_out_norm`, the fused `fused_gdn_step_norm`, and the verify window's `gdn_step_norm_multi` (which
+// must be bitwise the fused kernel per token).
+#include "strata/kernels/fused_gdn.hpp"
 #include "strata/kernels/gdn.hpp"
+#include "strata/kernels/native_gdn.hpp"
+#include "strata/kernels/native_gdn_preprocess.hpp"
+#include "strata/kernels/verify_kernels.hpp"
 
 #include <cuda_runtime.h>
 
@@ -32,6 +53,8 @@
 
 namespace {
 
+using strata::kernels::GdnGate;
+
 void check(cudaError_t e, const char* what) {
     if (e != cudaSuccess) {
         std::fprintf(stderr, "%s: %s\n", what, cudaGetErrorString(e));
@@ -40,11 +63,17 @@ void check(cudaError_t e, const char* what) {
 }
 
 float sigmoid_f(float x) { return 1.0f / (1.0f + std::exp(-x)); }
+float silu_f(float x) { return x / (1.0f + std::exp(-x)); }
+float gate_act(GdnGate g, float x) { return g == GdnGate::Silu ? silu_f(x) : sigmoid_f(x); }
+const char* gate_name(GdnGate g) { return strata::kernels::gdn_gate_name(g); }
+GdnGate other(GdnGate g) { return g == GdnGate::Silu ? GdnGate::Sigmoid : GdnGate::Silu; }
 
 /// The reference's `gdn_step`, with switches for the rival readings.
 ///
 /// `state` is passed in the REFERENCE layout (S, S, h_v) - i.e. (i, j, h) - so that this function is a
-/// transcription of `ref/gdn.py` and not of the kernel.
+/// transcription of `ref/gdn.py` and not of the kernel.  `q` is taken AS GIVEN: the legacy kernel wants it
+/// pre-scaled by 1/sqrt(S), the native and fused kernels scale the readout themselves, so the caller passes the
+/// scaled q here and the unscaled q to those kernels.
 void ref_step(std::vector<double>& state, const std::vector<float>& q, const std::vector<float>& k,
               const std::vector<float>& v, const std::vector<float>& gate, const std::vector<float>& beta,
               int S, int h_k, int h_v, std::vector<float>& o, bool modulo_heads, bool decay_first) {
@@ -67,6 +96,19 @@ void ref_step(std::vector<double>& state, const std::vector<float>& q, const std
         }
     }
     o = oo;
+}
+
+/// `y = rms_norm(o, eps) * ssm_norm * act(z)`, one RMS per head (row), as `ref/gdn.py` / `ref/qwen36.py` write it.
+void ref_out_norm(const std::vector<float>& o, const std::vector<float>& z, const std::vector<float>& sn, int h_v,
+                  int S, float eps, GdnGate act, std::vector<float>& y) {
+    y.assign((size_t) h_v * S, 0.0f);
+    for (int h = 0; h < h_v; ++h) {
+        double acc = 0;
+        for (int i = 0; i < S; ++i) acc += (double) o[(size_t) (h * S + i)] * (double) o[(size_t) (h * S + i)];
+        const float inv = (float) (1.0 / std::sqrt(acc / S + (double) eps));
+        for (int i = 0; i < S; ++i)
+            y[(size_t) (h * S + i)] = o[(size_t) (h * S + i)] * inv * sn[(size_t) i] * gate_act(act, z[(size_t) (h * S + i)]);
+    }
 }
 
 /// `ref/gdn.py::conv_step` in its own (d_conv, C) row-major orientation.
@@ -92,6 +134,241 @@ double rel_l1(const std::vector<float>& a, const std::vector<float>& b) {
     return d / (m > 1e-30 ? m : 1e-30);
 }
 
+/// The device state (S, h_v, S), j fastest, read back into the reference layout and compared.
+double state_rel(const std::vector<double>& want, const std::vector<float>& got_dev, int S, int h_v) {
+    double d = 0, m = 0;
+    for (int i = 0; i < S; ++i)
+        for (int j = 0; j < S; ++j)
+            for (int h = 0; h < h_v; ++h) {
+                const double w = want[(size_t) (i * S + j) * h_v + h];
+                d += std::fabs(w - (double) got_dev[(size_t) (i * h_v + h) * S + j]);
+                m += std::fabs(w);
+            }
+    return d / (m > 1e-30 ? m : 1e-30);
+}
+
+template <class T>
+T* dev(const std::vector<T>& h, const char* what) {
+    T* p = nullptr;
+    check(cudaMalloc(&p, h.size() * sizeof(T) + 16), what);
+    check(cudaMemcpy(p, h.data(), h.size() * sizeof(T), cudaMemcpyHostToDevice), what);
+    return p;
+}
+template <class T>
+std::vector<T> host(const T* d, size_t n, const char* what) {
+    std::vector<T> h(n);
+    check(cudaMemcpy(h.data(), d, n * sizeof(T), cudaMemcpyDeviceToHost), what);
+    return h;
+}
+
+int g_bad = 0;
+void observable(const char* what, double rel) {
+    std::printf("  %-58s %-4s (%.2f%% apart)\n", what, rel > 0.05 ? "yes" : "*** NO ***", rel * 100);
+    if (!(rel > 0.05)) ++g_bad;
+}
+void within(const char* what, double rel, double tol) {
+    std::printf("  %-58s rel %.3e%s\n", what, rel, rel <= tol ? "" : "   *** over tolerance ***");
+    if (!(rel <= tol)) ++g_bad;
+}
+
+/// Sections 1 and 5 for one geometry: the recurrence through every implementation, the state layout, the output
+/// gate with its negative case.  `model_gate` is the gate the model with this head count uses.
+void recurrence_and_gate(int S, int h_k, int h_v, GdnGate model_gate, std::mt19937& rng, cudaStream_t stream) {
+    std::normal_distribution<float> gauss(0.0f, 1.0f);
+    std::printf("\n== geometry S %d, h_k %d, h_v %d (VPK %d), model gate %s\n", S, h_k, h_v, h_v / h_k,
+                gate_name(model_gate));
+
+    // The state encodes its own coordinates, so a layout mix-up cannot pass: reading (i,j,h) where the
+    // buffer holds (i,h,j) gives a DIFFERENT number, not a wrong-but-plausible one.
+    std::vector<double> st_ref((size_t) S * S * h_v);
+    std::vector<float> st_dev((size_t) S * h_v * S);
+    for (int i = 0; i < S; ++i)
+        for (int j = 0; j < S; ++j)
+            for (int h = 0; h < h_v; ++h) {
+                const float val = (float) (0.001 * (i + 2 * j + 3 * h) - 1.0);
+                st_ref[(size_t) (i * S + j) * h_v + h] = val;
+                st_dev[(size_t) (i * h_v + h) * S + j] = val;   // (S, h_v, S), j fastest
+            }
+
+    std::vector<float> q((size_t) h_k * S), k((size_t) h_k * S), v((size_t) h_v * S), gate((size_t) h_v),
+        beta((size_t) h_v), z((size_t) h_v * S), sn((size_t) S);
+    for (auto& x : q) x = gauss(rng) * 0.1f;
+    for (auto& x : k) x = gauss(rng) * 0.1f;
+    for (auto& x : v) x = gauss(rng);
+    for (auto& x : gate) x = -(2.0f + 4.0f * (float) (rng() % 100) / 100.0f);   // dec in (0.0025, 0.135]
+    for (auto& x : beta) x = (float) (rng() % 100) / 100.0f;
+    for (auto& x : z) x = gauss(rng);
+    for (auto& x : sn) x = 1.0f + 0.1f * gauss(rng);
+    const float eps = 1e-6f;
+    const float rs = 1.0f / std::sqrt((float) S);
+    std::vector<float> q_scaled = q;                     // the legacy kernel's contract: q pre-scaled
+    for (auto& x : q_scaled) x *= rs;
+
+    std::vector<float> want_o;                           // o = (S q) / sqrt(S) - what every implementation emits
+    std::vector<double> st_mod = st_ref;
+    ref_step(st_mod, q_scaled, k, v, gate, beta, S, h_k, h_v, want_o, true, true);
+    std::vector<float> want_y, want_y_wrong;
+    ref_out_norm(want_o, z, sn, h_v, S, eps, model_gate, want_y);
+    ref_out_norm(want_o, z, sn, h_v, S, eps, other(model_gate), want_y_wrong);
+
+    // ---- the traps, observable before any kernel is judged
+    {
+        std::vector<double> a = st_ref;
+        std::vector<float> oo;
+        ref_step(a, q_scaled, k, v, gate, beta, S, h_k, h_v, oo, false, true);
+        observable("modulo vs interleave head pairing", rel_l1(want_o, oo));
+    }
+    {
+        std::vector<double> a = st_ref;
+        std::vector<float> oo;
+        ref_step(a, q_scaled, k, v, gate, beta, S, h_k, h_v, oo, true, false);
+        // The two readings differ by exactly `k (x) (beta * v * (1 - dec))`, so the fixture is only able
+        // to see the trap when `dec` is far from 1 and `beta` is far from 0.  The first version used
+        // gate in [-0.99, 0] - dec in [0.37, 1] - and managed 3.25%, which is a threshold the wrong
+        // reading nearly clears.  Deep decay is also the realistic regime: `ssm_a = -exp(A_log) < 0` and
+        // softplus is positive, so gate is comfortably negative in the real model.
+        observable("decay before vs after the update", rel_l1(want_o, oo));
+    }
+    {
+        char what[96];
+        std::snprintf(what, sizeof what, "%s vs %s on the output gate (host)", gate_name(model_gate),
+                      gate_name(other(model_gate)));
+        observable(what, rel_l1(want_y, want_y_wrong));
+    }
+
+    // ---- device buffers
+    float* d_st = dev(st_dev, "st");
+    float* d_q = dev(q, "q");
+    float* d_qs = dev(q_scaled, "qs");
+    float* d_k = dev(k, "k");
+    float* d_v = dev(v, "v");
+    float* d_g = dev(gate, "g");
+    float* d_b = dev(beta, "b");
+    float* d_z = dev(z, "z");
+    float* d_sn = dev(sn, "sn");
+    float *d_o = nullptr, *d_y = nullptr;
+    check(cudaMalloc(&d_o, (size_t) h_v * S * 4), "o");
+    check(cudaMalloc(&d_y, (size_t) h_v * S * 4), "y");
+    const strata::kernels::GdnShapes sh{S, h_k, h_v};
+    auto reset_state = [&] { check(cudaMemcpy(d_st, st_dev.data(), st_dev.size() * 4, cudaMemcpyHostToDevice), "rst"); };
+
+    // The kernel accumulates in f32 and the reference in f64, and the state is a RECURRENCE over 128 terms,
+    // so 1e-5 is the arithmetic's floor here and not a structural allowance.
+    const double tol = 1e-5;
+
+    // ---- 1. legacy: gdn_step, then gdn_out_norm
+    {
+        reset_state();
+        strata::kernels::gdn_step(d_st, d_qs, d_k, d_v, d_g, d_b, d_o, sh, nullptr);
+        within("legacy gdn_step: o vs reference", rel_l1(want_o, host(d_o, want_o.size(), "o")), tol);
+        within("legacy gdn_step: state (read via (S,h_v,S)) vs reference",
+               state_rel(st_mod, host(d_st, st_dev.size(), "st"), S, h_v), tol);
+        strata::kernels::gdn_out_norm(d_o, d_z, d_sn, d_y, h_v, S, eps, model_gate, nullptr);
+        within("legacy gdn_out_norm: y vs reference", rel_l1(want_y, host(d_y, want_y.size(), "y")), tol);
+        strata::kernels::gdn_out_norm(d_o, d_z, d_sn, d_y, h_v, S, eps, other(model_gate), nullptr);
+        observable("legacy gdn_out_norm with the WRONG gate differs (negative)",
+                   rel_l1(want_y, host(d_y, want_y.size(), "y")));
+    }
+    // ---- 2. pinned native: native_gdn_step (q unscaled, readout scaled), then native_gdn_out_norm
+    if (S == 128) {
+        reset_state();
+        strata::kernels::native_gdn_step(d_st, d_q, d_k, d_v, d_g, d_b, d_o, sh, stream);
+        check(cudaStreamSynchronize(stream), "native step");
+        within("native_gdn_step: o vs reference", rel_l1(want_o, host(d_o, want_o.size(), "o")), tol);
+        within("native_gdn_step: state vs reference", state_rel(st_mod, host(d_st, st_dev.size(), "st"), S, h_v), tol);
+        strata::kernels::native_gdn_out_norm(d_o, d_z, d_sn, d_y, h_v, S, eps, model_gate, stream);
+        check(cudaStreamSynchronize(stream), "native norm");
+        within("native_gdn_out_norm: y vs reference", rel_l1(want_y, host(d_y, want_y.size(), "y")), tol);
+        strata::kernels::native_gdn_out_norm(d_o, d_z, d_sn, d_y, h_v, S, eps, other(model_gate), stream);
+        check(cudaStreamSynchronize(stream), "native norm wrong");
+        observable("native_gdn_out_norm with the WRONG gate differs (negative)",
+                   rel_l1(want_y, host(d_y, want_y.size(), "y")));
+    }
+    // ---- 3. fused: step + norm in one kernel (the default native decode path)
+    std::vector<float> fused_state, fused_y;
+    if (S == 128) {
+        reset_state();
+        strata::kernels::fused_gdn_step_norm(d_st, d_q, d_k, d_v, d_g, d_b, d_z, d_sn, eps, model_gate, d_y, h_k, h_v,
+                                             stream);
+        check(cudaStreamSynchronize(stream), "fused");
+        fused_state = host(d_st, st_dev.size(), "st");
+        fused_y = host(d_y, want_y.size(), "y");
+        within("fused_gdn_step_norm: state vs reference", state_rel(st_mod, fused_state, S, h_v), tol);
+        within("fused_gdn_step_norm: y vs reference", rel_l1(want_y, fused_y), tol);
+        reset_state();
+        strata::kernels::fused_gdn_step_norm(d_st, d_q, d_k, d_v, d_g, d_b, d_z, d_sn, eps, other(model_gate), d_y, h_k,
+                                             h_v, stream);
+        check(cudaStreamSynchronize(stream), "fused wrong");
+        observable("fused_gdn_step_norm with the WRONG gate differs (negative)",
+                   rel_l1(want_y, host(d_y, want_y.size(), "y")));
+    }
+    // ---- 4. the verify window's kernel, one token: verify (state untouched) then commit (state written), and
+    //         both bitwise the fused kernel
+    if (S == 128) {
+        const int C = 2 * h_k * S + h_v * S;
+        std::vector<float> hbuf((size_t) C);
+        std::memcpy(hbuf.data(), q.data(), q.size() * 4);
+        std::memcpy(hbuf.data() + q.size(), k.data(), k.size() * 4);
+        std::memcpy(hbuf.data() + 2 * q.size(), v.data(), v.size() * 4);
+        float* d_h = dev(hbuf, "h");
+        const std::vector<int32_t> keep1{1};
+        int32_t* d_keep = dev(keep1, "keep");
+        reset_state();
+        strata::kernels::gdn_step_norm_multi(d_st, d_h, C, d_g, d_b, d_z, d_sn, eps, model_gate, d_y, h_k, h_v, 1,
+                                             nullptr, stream, 0);
+        check(cudaStreamSynchronize(stream), "multi verify");
+        const std::vector<float> vy = host(d_y, want_y.size(), "y");
+        const std::vector<float> vst = host(d_st, st_dev.size(), "st");
+        within("gdn_step_norm_multi (verify): y vs reference", rel_l1(want_y, vy), tol);
+        const bool untouched = std::memcmp(vst.data(), st_dev.data(), st_dev.size() * 4) == 0;
+        std::printf("  %-58s %s\n", "gdn_step_norm_multi (verify) leaves the state untouched", untouched ? "yes" : "*** NO ***");
+        if (!untouched) ++g_bad;
+        const bool bit_y = std::memcmp(vy.data(), fused_y.data(), vy.size() * 4) == 0;
+        std::printf("  %-58s %s\n", "gdn_step_norm_multi y is BITWISE fused_gdn_step_norm", bit_y ? "yes" : "*** NO ***");
+        if (!bit_y) ++g_bad;
+        strata::kernels::gdn_step_norm_multi(d_st, d_h, C, d_g, d_b, d_z, d_sn, eps, model_gate, d_y, h_k, h_v, 1,
+                                             d_keep, stream, 0);
+        check(cudaStreamSynchronize(stream), "multi commit");
+        const std::vector<float> cst = host(d_st, st_dev.size(), "st");
+        const bool bit_st = std::memcmp(cst.data(), fused_state.data(), cst.size() * 4) == 0;
+        std::printf("  %-58s %s\n", "gdn_step_norm_multi (commit) state is BITWISE the fused state", bit_st ? "yes" : "*** NO ***");
+        if (!bit_st) ++g_bad;
+        // the split commit kernel (t_out_begin >= n_tok, no outputs): the same state, bitwise
+        reset_state();
+        strata::kernels::gdn_step_norm_multi(d_st, d_h, C, d_g, d_b, d_z, d_sn, eps, model_gate, d_y, h_k, h_v, 1,
+                                             d_keep, stream, 1);
+        check(cudaStreamSynchronize(stream), "multi commit split");
+        const std::vector<float> sst = host(d_st, st_dev.size(), "st");
+        const bool bit_split = std::memcmp(sst.data(), fused_state.data(), sst.size() * 4) == 0;
+        std::printf("  %-58s %s\n", "gdn_step_norm_multi (split commit) state is BITWISE the fused state", bit_split ? "yes" : "*** NO ***");
+        if (!bit_split) ++g_bad;
+        reset_state();
+        strata::kernels::gdn_step_norm_multi(d_st, d_h, C, d_g, d_b, d_z, d_sn, eps, other(model_gate), d_y, h_k, h_v, 1,
+                                             nullptr, stream, 0);
+        check(cudaStreamSynchronize(stream), "multi wrong");
+        observable("gdn_step_norm_multi with the WRONG gate differs (negative)",
+                   rel_l1(want_y, host(d_y, want_y.size(), "y")));
+        cudaFree(d_h); cudaFree(d_keep);
+    }
+
+    // a zero state stays zero, and a zero gate/beta leaves the state untouched (the reference's
+    // PROPERTY 4 setup) - a cheap independent invariant that no layout can fake
+    {
+        std::vector<float> zero(st_dev.size(), 0.0f), zg((size_t) h_v, 0.0f), zb((size_t) h_v, 0.0f);
+        check(cudaMemcpy(d_st, zero.data(), zero.size() * 4, cudaMemcpyHostToDevice), "z0");
+        check(cudaMemcpy(d_g, zg.data(), zg.size() * 4, cudaMemcpyHostToDevice), "z1");
+        check(cudaMemcpy(d_b, zb.data(), zb.size() * 4, cudaMemcpyHostToDevice), "z2");
+        strata::kernels::gdn_step(d_st, d_qs, d_k, d_v, d_g, d_b, d_o, sh, nullptr);
+        double nz = 0;
+        for (float x : host(d_st, zero.size(), "z3")) nz += std::fabs(x);
+        const bool ok = nz == 0.0;
+        std::printf("  %-58s %s\n", "gate=beta=0 from a zero state is a no-op", ok ? "yes" : "*** NO ***");
+        if (!ok) ++g_bad;
+    }
+    cudaFree(d_st); cudaFree(d_q); cudaFree(d_qs); cudaFree(d_k); cudaFree(d_v); cudaFree(d_g); cudaFree(d_b);
+    cudaFree(d_z); cudaFree(d_sn); cudaFree(d_o); cudaFree(d_y);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -101,125 +378,19 @@ int main(int argc, char** argv) {
         else { std::fprintf(stderr, "usage: gdn_parity [--selftest]\n"); return 2; }
     }
 
-    const int S = 128, h_k = 16, h_v = 48;      // the artifact's real geometry
     std::mt19937 rng(2024);
     std::normal_distribution<float> gauss(0.0f, 1.0f);
-    int bad = 0;
+    cudaStream_t stream = nullptr;
+    // A BLOCKING stream, deliberately: the fixtures are reset with pageable `cudaMemcpy`, which may return before the
+    // DMA lands, and a non-blocking stream does not order after the legacy stream - the first version of this test
+    // raced its own resets and reported the native kernels 7.5x off at one geometry and exact at the other.
+    check(cudaStreamCreate(&stream), "stream");
 
-    // ================= 1. the recurrence =================
-    {
-        // The state encodes its own coordinates, so a layout mix-up cannot pass: reading (i,j,h) where the
-        // buffer holds (i,h,j) gives a DIFFERENT number, not a wrong-but-plausible one.
-        std::vector<double> st_ref((size_t) S * S * h_v);
-        std::vector<float> st_dev((size_t) S * h_v * S);
-        for (int i = 0; i < S; ++i)
-            for (int j = 0; j < S; ++j)
-                for (int h = 0; h < h_v; ++h) {
-                    const float val = (float) (0.001 * (i + 2 * j + 3 * h) - 1.0);
-                    st_ref[(size_t) (i * S + j) * h_v + h] = val;
-                    st_dev[(size_t) (i * h_v + h) * S + j] = val;   // (S, h_v, S), j fastest
-                }
-
-        std::vector<float> q((size_t) h_k * S), k((size_t) h_k * S), v((size_t) h_v * S), gate((size_t) h_v),
-            beta((size_t) h_v);
-        for (auto& x : q) x = gauss(rng) * 0.1f;
-        for (auto& x : k) x = gauss(rng) * 0.1f;
-        for (auto& x : v) x = gauss(rng);
-        for (auto& x : gate) x = -(2.0f + 4.0f * (float) (rng() % 100) / 100.0f);   // dec in (0.0025, 0.135]
-        for (auto& x : beta) x = (float) (rng() % 100) / 100.0f;
-
-        std::vector<float> want_o;
-        std::vector<double> st_mod = st_ref;
-        ref_step(st_mod, q, k, v, gate, beta, S, h_k, h_v, want_o, true, true);
-
-        // the traps
-        {
-            std::vector<double> a = st_ref;
-            std::vector<float> oo;
-            ref_step(a, q, k, v, gate, beta, S, h_k, h_v, oo, false, true);
-            const double rel = rel_l1(want_o, oo);
-            std::printf("  %-42s %-4s (%.2f%% apart)\n", "modulo vs interleave head pairing",
-                        rel > 0.05 ? "yes" : "*** NO ***", rel * 100);
-            if (!(rel > 0.05)) ++bad;
-        }
-        {
-            std::vector<double> a = st_ref;
-            std::vector<float> oo;
-            ref_step(a, q, k, v, gate, beta, S, h_k, h_v, oo, true, false);
-            const double rel = rel_l1(want_o, oo);
-            std::printf("  %-42s %-4s (%.2f%% apart)\n", "decay before vs after the update",
-                        rel > 0.05 ? "yes" : "*** NO ***", rel * 100);
-            // The two readings differ by exactly `k (x) (beta * v * (1 - dec))`, so the fixture is only able
-            // to see the trap when `dec` is far from 1 and `beta` is far from 0.  The first version used
-            // gate in [-0.99, 0] - dec in [0.37, 1] - and managed 3.25%, which is a threshold the wrong
-            // reading nearly clears.  Deep decay is also the realistic regime: `ssm_a = -exp(A_log) < 0` and
-            // softplus is positive, so gate is comfortably negative in the real model.
-            if (!(rel > 0.05)) ++bad;
-        }
-
-        // the kernel
-        float *d_st = nullptr, *d_q = nullptr, *d_k = nullptr, *d_v = nullptr, *d_g = nullptr, *d_b = nullptr,
-              *d_o = nullptr;
-        check(cudaMalloc(&d_st, st_dev.size() * 4), "st");
-        check(cudaMalloc(&d_q, q.size() * 4), "q");
-        check(cudaMalloc(&d_k, k.size() * 4), "k");
-        check(cudaMalloc(&d_v, v.size() * 4), "v");
-        check(cudaMalloc(&d_g, gate.size() * 4), "g");
-        check(cudaMalloc(&d_b, beta.size() * 4), "b");
-        check(cudaMalloc(&d_o, (size_t) h_v * S * 4), "o");
-        check(cudaMemcpy(d_st, st_dev.data(), st_dev.size() * 4, cudaMemcpyHostToDevice), "cst");
-        check(cudaMemcpy(d_q, q.data(), q.size() * 4, cudaMemcpyHostToDevice), "cq");
-        check(cudaMemcpy(d_k, k.data(), k.size() * 4, cudaMemcpyHostToDevice), "ck");
-        check(cudaMemcpy(d_v, v.data(), v.size() * 4, cudaMemcpyHostToDevice), "cv");
-        check(cudaMemcpy(d_g, gate.data(), gate.size() * 4, cudaMemcpyHostToDevice), "cg");
-        check(cudaMemcpy(d_b, beta.data(), beta.size() * 4, cudaMemcpyHostToDevice), "cb");
-
-        strata::kernels::GdnShapes sh{S, h_k, h_v};
-        strata::kernels::gdn_step(d_st, d_q, d_k, d_v, d_g, d_b, d_o, sh, nullptr);
-
-        std::vector<float> got_o((size_t) h_v * S), got_st(st_dev.size());
-        check(cudaMemcpy(got_o.data(), d_o, got_o.size() * 4, cudaMemcpyDeviceToHost), "cgo");
-        check(cudaMemcpy(got_st.data(), d_st, got_st.size() * 4, cudaMemcpyDeviceToHost), "cgst");
-
-        // o, and the STATE read back through the declared layout
-        const double rel_o = rel_l1(want_o, got_o);
-        double rel_st = 0, mag_st = 0;
-        for (int i = 0; i < S; ++i)
-            for (int j = 0; j < S; ++j)
-                for (int h = 0; h < h_v; ++h) {
-                    const size_t dev = (size_t) (i * h_v + h) * S + j;
-                    const double w = st_mod[(size_t) (i * S + j) * h_v + h];
-                    rel_st += std::fabs(w - (double) got_st[dev]);
-                    mag_st += std::fabs(w);
-                }
-        rel_st /= (mag_st > 1e-30 ? mag_st : 1e-30);
-        std::printf("\n  %-42s rel %.3e\n", "o vs reference", rel_o);
-        std::printf("  %-42s rel %.3e\n", "state (read via (S,h_v,S)) vs reference", rel_st);
-        // The kernel accumulates in f32 and the reference in f64, and the state is a RECURRENCE over 128
-        // terms, so 1e-5 is the arithmetic's floor here and not a structural allowance.
-        if (!(rel_o <= 1e-5)) { std::printf("    *** o over 1e-5 ***\n"); ++bad; }
-        if (!(rel_st <= 1e-5)) { std::printf("    *** state over 1e-5 ***\n"); ++bad; }
-
-        // a zero state stays zero, and a zero gate/beta leaves the state untouched (the reference's
-        // PROPERTY 4 setup) - a cheap independent invariant that no layout can fake
-        {
-            std::vector<float> zero(st_dev.size(), 0.0f), zg((size_t) h_v, 0.0f), zb((size_t) h_v, 0.0f);
-            check(cudaMemcpy(d_st, zero.data(), zero.size() * 4, cudaMemcpyHostToDevice), "z0");
-            check(cudaMemcpy(d_g, zg.data(), zg.size() * 4, cudaMemcpyHostToDevice), "z1");
-            check(cudaMemcpy(d_b, zb.data(), zb.size() * 4, cudaMemcpyHostToDevice), "z2");
-            strata::kernels::gdn_step(d_st, d_q, d_k, d_v, d_g, d_b, d_o, sh, nullptr);
-            std::vector<float> zz(zero.size());
-            check(cudaMemcpy(zz.data(), d_st, zz.size() * 4, cudaMemcpyDeviceToHost), "z3");
-            double nz = 0;
-            for (float x : zz) nz += std::fabs(x);
-            const bool ok = nz == 0.0;
-            std::printf("  %-42s %s\n", "gate=beta=0 from a zero state is a no-op", ok ? "yes" : "*** NO ***");
-            if (!ok) ++bad;
-        }
-
-        // ephemeral state: unchanged when the state is untouched but beta=1 — the delta rule writing k*d
-        cudaFree(d_st); cudaFree(d_q); cudaFree(d_k); cudaFree(d_v); cudaFree(d_g); cudaFree(d_b); cudaFree(d_o);
-    }
+    // ================= 1 + 5. the recurrence and the output gate, at both models' geometries =================
+    // Flash-Next: 16 k-heads / 48 v-heads, sigmoid.  Qwen3.6-35B-A3B: 16 / 32, SiLU (the sigmoid run is its negative).
+    recurrence_and_gate(128, 16, 48, GdnGate::Sigmoid, rng, stream);
+    recurrence_and_gate(128, 16, 32, GdnGate::Silu, rng, stream);
+    int bad = g_bad;
 
     // ================= 2. the conv =================
     {
@@ -240,12 +411,6 @@ int main(int argc, char** argv) {
             for (int i = 0; i < dc - 1; ++i)
                 for (int c = 0; c < C; ++c) d[(size_t) (c * (dc - 1) + i)] = r[(size_t) (i * C + c)];
             return d;
-        };
-        auto to_ref_layout = [&](const std::vector<float>& d) {
-            std::vector<float> r(d.size());
-            for (int i = 0; i < dc - 1; ++i)
-                for (int c = 0; c < C; ++c) r[(size_t) (i * C + c)] = d[(size_t) (c * (dc - 1) + i)];
-            return r;
         };
 
         std::vector<float> cs = to_dev_layout(cs_ref);
@@ -273,29 +438,18 @@ int main(int argc, char** argv) {
                 a += (double) x[(size_t) c] * (double) kW_wrong[(size_t) (c * dc + dc - 1)];
                 out_bad[(size_t) c] = (float) a;
             }
-            const double rel = rel_l1(want, out_bad);
-            std::printf("\n  %-42s %-4s (%.1f%% apart)\n", "conv weight layout is observable",
-                        rel > 0.05 ? "yes" : "*** NO ***", rel * 100);
-            if (!(rel > 0.05)) ++bad;
+            std::printf("\n== the conv\n");
+            observable("conv weight layout is observable", rel_l1(want, out_bad));
         }
 
-        float *d_cs = nullptr, *d_x = nullptr, *d_w = nullptr, *d_o = nullptr;
-        check(cudaMalloc(&d_cs, cs.size() * 4), "cs");
-        check(cudaMalloc(&d_x, x.size() * 4), "cx");
-        check(cudaMalloc(&d_w, kW.size() * 4), "cw");
+        float* d_cs = dev(cs, "cs");
+        float* d_x = dev(x, "cx");
+        float* d_w = dev(kW, "cw");
+        float* d_o = nullptr;
         check(cudaMalloc(&d_o, (size_t) C * 4), "co");
-        check(cudaMemcpy(d_cs, cs.data(), cs.size() * 4, cudaMemcpyHostToDevice), "ccs");
-        check(cudaMemcpy(d_x, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "ccx");
-        check(cudaMemcpy(d_w, kW.data(), kW.size() * 4, cudaMemcpyHostToDevice), "ccw");
         strata::kernels::gdn_conv_step(d_cs, d_x, d_w, d_o, C, dc, nullptr);
-        std::vector<float> got((size_t) C), got_cs(cs.size());
-        check(cudaMemcpy(got.data(), d_o, got.size() * 4, cudaMemcpyDeviceToHost), "cgo");
-        check(cudaMemcpy(got_cs.data(), d_cs, got_cs.size() * 4, cudaMemcpyDeviceToHost), "cgs");
-        const double rel_out = rel_l1(want, got), rel_cs = rel_l1(cs_want, got_cs);
-        std::printf("  %-42s rel %.3e\n", "conv out vs reference", rel_out);
-        std::printf("  %-42s rel %.3e\n", "conv state slide (mapped) vs reference", rel_cs);
-        if (!(rel_out <= 1e-6)) { std::printf("    *** conv out ***\n"); ++bad; }
-        if (!(rel_cs <= 1e-6)) { std::printf("    *** conv state ***\n"); ++bad; }
+        within("conv out vs reference", rel_l1(want, host(d_o, (size_t) C, "cgo")), 1e-6);
+        within("conv state slide (mapped) vs reference", rel_l1(cs_want, host(d_cs, cs.size(), "cgs")), 1e-6);
         cudaFree(d_cs); cudaFree(d_x); cudaFree(d_w); cudaFree(d_o);
     }
 
@@ -323,74 +477,55 @@ int main(int argc, char** argv) {
             const float inv = (float) (1.0 / std::sqrt(acc / cols + (double) eps));
             for (int i = 0; i < cols; ++i) x_mean[(size_t) (r * cols + i)] *= inv;
         }
-        const double rel_trap = rel_l1(x_ref, x_mean);
-        std::printf("\n  %-42s %-4s (%.1f%% apart)\n", "eps on sum vs on mean is observable",
-                    rel_trap > 0.05 ? "yes" : "*** NO ***", rel_trap * 100);
-        if (!(rel_trap > 0.05)) ++bad;
+        std::printf("\n== l2_norm\n");
+        observable("eps on sum vs on mean is observable", rel_l1(x_ref, x_mean));
 
-        float* d_x = nullptr;
-        check(cudaMalloc(&d_x, x.size() * 4), "lx");
-        check(cudaMemcpy(d_x, x.data(), x.size() * 4, cudaMemcpyHostToDevice), "lcx");
+        float* d_x = dev(x, "lx");
         strata::kernels::gdn_l2_norm(d_x, rows, cols, eps, nullptr);
-        std::vector<float> got(x.size());
-        check(cudaMemcpy(got.data(), d_x, got.size() * 4, cudaMemcpyDeviceToHost), "lcg");
-        const double rel = rel_l1(x_ref, got);
-        std::printf("  %-42s rel %.3e\n", "l2_norm vs reference", rel);
-        if (!(rel <= 1e-6)) ++bad;
+        within("l2_norm vs reference", rel_l1(x_ref, host(d_x, x.size(), "lcg")), 1e-6);
         cudaFree(d_x);
     }
 
-    // ================= 4. the closing norm =================
+    // ================= 4. the closing norm on its own, both gates through both single-purpose kernels =================
     {
         const int S2 = 128, hv2 = 8;
-        std::vector<float> o((size_t) hv2 * S2), z((size_t) hv2 * S2), sn((size_t) S2), y_ref((size_t) hv2 * S2);
+        std::vector<float> o((size_t) hv2 * S2), z((size_t) hv2 * S2), sn((size_t) S2);
         for (auto& val : o) val = gauss(rng);
         for (auto& val : z) val = gauss(rng);
         for (auto& val : sn) val = 1.0f + 0.1f * gauss(rng);
         const float eps = 1e-6f;
-        for (int h = 0; h < hv2; ++h) {
-            double acc = 0;
-            for (int i = 0; i < S2; ++i) acc += (double) o[(size_t) (h * S2 + i)] * (double) o[(size_t) (h * S2 + i)];
-            const float inv = (float) (1.0 / std::sqrt(acc / S2 + (double) eps));
-            for (int i = 0; i < S2; ++i)
-                y_ref[(size_t) (h * S2 + i)] = o[(size_t) (h * S2 + i)] * inv * sn[(size_t) i] *
-                                              sigmoid_f(z[(size_t) (h * S2 + i)]);
+        std::vector<float> y_sig, y_silu;
+        ref_out_norm(o, z, sn, hv2, S2, eps, GdnGate::Sigmoid, y_sig);
+        ref_out_norm(o, z, sn, hv2, S2, eps, GdnGate::Silu, y_silu);
+        std::printf("\n== the closing norm, both gates\n");
+        observable("sigmoid vs SiLU on the gate is observable", rel_l1(y_sig, y_silu));
+        float* d_o = dev(o, "no");
+        float* d_z = dev(z, "nz");
+        float* d_sn = dev(sn, "ns");
+        float* d_y = nullptr;
+        check(cudaMalloc(&d_y, y_sig.size() * 4), "ny");
+        for (GdnGate gt : {GdnGate::Sigmoid, GdnGate::Silu}) {
+            const std::vector<float>& want = gt == GdnGate::Silu ? y_silu : y_sig;
+            const std::vector<float>& wrong = gt == GdnGate::Silu ? y_sig : y_silu;
+            char what[96];
+            strata::kernels::gdn_out_norm(d_o, d_z, d_sn, d_y, hv2, S2, eps, gt, nullptr);
+            std::vector<float> got = host(d_y, want.size(), "ncy");
+            std::snprintf(what, sizeof what, "gdn_out_norm(%s) vs reference", gate_name(gt));
+            within(what, rel_l1(want, got), 1e-6);
+            std::snprintf(what, sizeof what, "gdn_out_norm(%s) vs the other gate's reference", gate_name(gt));
+            observable(what, rel_l1(wrong, got));
+            strata::kernels::native_gdn_out_norm(d_o, d_z, d_sn, d_y, hv2, S2, eps, gt, stream);
+            check(cudaStreamSynchronize(stream), "nn");
+            got = host(d_y, want.size(), "nny");
+            std::snprintf(what, sizeof what, "native_gdn_out_norm(%s) vs reference", gate_name(gt));
+            within(what, rel_l1(want, got), 1e-5);
         }
-        float *d_o = nullptr, *d_z = nullptr, *d_sn = nullptr, *d_y = nullptr;
-        check(cudaMalloc(&d_o, o.size() * 4), "no");
-        check(cudaMalloc(&d_z, z.size() * 4), "nz");
-        check(cudaMalloc(&d_sn, sn.size() * 4), "ns");
-        check(cudaMalloc(&d_y, y_ref.size() * 4), "ny");
-        check(cudaMemcpy(d_o, o.data(), o.size() * 4, cudaMemcpyHostToDevice), "nco");
-        check(cudaMemcpy(d_z, z.data(), z.size() * 4, cudaMemcpyHostToDevice), "ncz");
-        check(cudaMemcpy(d_sn, sn.data(), sn.size() * 4, cudaMemcpyHostToDevice), "ncs");
-        strata::kernels::gdn_out_norm(d_o, d_z, d_sn, d_y, hv2, S2, eps, nullptr);
-        std::vector<float> got(y_ref.size());
-        check(cudaMemcpy(got.data(), d_y, got.size() * 4, cudaMemcpyDeviceToHost), "ncy");
-        const double rel = rel_l1(y_ref, got);
-        std::printf("\n  %-42s rel %.3e\n", "out norm (rms * ssm_norm * sigmoid z)", rel);
-        if (!(rel <= 1e-6)) ++bad;
-
-        // SiLU instead of sigmoid is the qwen3.5 reading; `ref/gdn.py` says this artifact does NOT use it
-        std::vector<float> y_silu(y_ref.size());
-        for (int h = 0; h < hv2; ++h) {
-            double acc = 0;
-            for (int i = 0; i < S2; ++i) acc += (double) o[(size_t) (h * S2 + i)] * (double) o[(size_t) (h * S2 + i)];
-            const float inv = (float) (1.0 / std::sqrt(acc / S2 + (double) eps));
-            for (int i = 0; i < S2; ++i) {
-                const float zz = z[(size_t) (h * S2 + i)];
-                y_silu[(size_t) (h * S2 + i)] =
-                    o[(size_t) (h * S2 + i)] * inv * sn[(size_t) i] * (zz / (1.0f + std::exp(-zz)));
-            }
-        }
-        const double rel_silu = rel_l1(y_ref, y_silu);
-        std::printf("  %-42s %-4s (%.2f%% apart)\n", "sigmoid vs SiLU on the gate is observable",
-                    rel_silu > 0.05 ? "yes" : "*** NO ***", rel_silu * 100);
-        if (!(rel_silu > 0.05)) ++bad;
         cudaFree(d_o); cudaFree(d_z); cudaFree(d_sn); cudaFree(d_y);
     }
 
+    bad = g_bad;
     std::printf("\ngdn: %d failures\n", bad);
+    cudaStreamDestroy(stream);
     if (bad) return 1;
     if (selftest) std::printf("gdn_parity OK\n");
     return 0;

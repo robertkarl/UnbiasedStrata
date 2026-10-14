@@ -19,11 +19,13 @@
 
 namespace strata::prefill::fused {
 
-/// One layer's native expert geometry (cpu::NativeFmt's fields the kernels read; n_embd 2560, n_ff 640).
+/// One layer's native expert geometry (cpu::NativeFmt's fields the kernels read).  The widths are the model's
+/// (Flash-Next 2560 / 640, Qwen3.6 2048 / 512): n_embd a multiple of 256, n_ff of 64, and 2 n_ff a multiple of 256.
 struct NativeGeom {
     int gu_type = -1, d_type = -1;    ///< ggml types
     size_t gu_row = 0, d_row = 0;     ///< bytes per gate/up row and per down row
     size_t up_off = 0, down_off = 0;  ///< inside the blob
+    int64_t n_embd = 2560, n_ff = 640;
 };
 
 /// enabled() (STRATA_PF_FUSED=1 on sm_80+), and the kernels cover this gate/up and down pair on this device.

@@ -164,7 +164,8 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_multi_kernel(float* __re
                                                                      const float* __restrict__ z,
                                                                      const float* __restrict__ gamma, float eps,
                                                                      float* __restrict__ y, int h_k, int h_v, int T,
-                                                                     const int32_t* __restrict__ n_keep, int t_out_begin) {
+                                                                     const int32_t* __restrict__ n_keep, int t_out_begin,
+                                                                     int silu) {
     __shared__ float sk[S], sq[S];
     __shared__ float red[RG][S];
     __shared__ float wsum[S * RG / 32];
@@ -224,7 +225,8 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_multi_kernel(float* __re
             const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
             const float scale = rsqrtf(ss / (float) S + eps);
             const float zz = z[(size_t) t * value_dim + head * S + col];
-            y[(size_t) t * value_dim + head * S + col] = oc * scale * gamma[col] * (1.0f / (1.0f + __expf(-zz)));
+            const float act = silu ? zz / (1.0f + __expf(-zz)) : (1.0f / (1.0f + __expf(-zz)));   // bitwise fused_gdn_step_norm
+            y[(size_t) t * value_dim + head * S + col] = oc * scale * gamma[col] * act;
         }
     }
     if (n_keep != nullptr && n > 0) {
@@ -471,7 +473,7 @@ void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_bet
 }
 
 void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const float* gate, const float* beta,
-                         const float* z, const float* gamma, float eps, float* y, int h_k, int h_v, int n_tok,
+                         const float* z, const float* gamma, float eps, GdnGate act, float* y, int h_k, int h_v, int n_tok,
                          const int32_t* n_keep, void* stream, int t_out_begin) {
     if (!state || !h || !gate || !beta || !z || !gamma || !y || h_k <= 0 || h_v % h_k || n_tok < 1 ||
         n_tok > kVerifyMaxT) {
@@ -487,7 +489,8 @@ void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const 
             state, h, conv_channels, gate, beta, h_k, h_v, n_keep);
     } else {
         gdn_step_norm_multi_kernel<<<(unsigned) h_v, dim3(S, RG), 0, (cudaStream_t) stream>>>(
-            state, h, conv_channels, gate, beta, z, gamma, eps, y, h_k, h_v, n_tok, n_keep, t_out_begin);
+            state, h, conv_channels, gate, beta, z, gamma, eps, y, h_k, h_v, n_tok, n_keep, t_out_begin,
+            act == GdnGate::Silu ? 1 : 0);
     }
     check("gdn_step_norm_multi");
 }

@@ -43,6 +43,11 @@ bool native_fmt(int gu_type, int d_type, int64_t n_embd, int64_t n_ff, NativeFmt
         err = "native experts: ggml-cpu cannot quantize an activation for this layer";
         return false;
     }
+    if (n_embd <= 0 || n_ff <= 0 || n_embd > H || n_ff > FF) {   // the pool's SplitBufMulti rows are FF / H wide
+        err = "native experts: expert geometry " + std::to_string(n_embd) + " x " + std::to_string(n_ff) +
+              " exceeds the pool's buffers (" + std::to_string(H) + " x " + std::to_string(FF) + ")";
+        return false;
+    }
     if (n_embd % ggml_blck_size((ggml_type) gu_type) || n_ff % ggml_blck_size((ggml_type) d_type) ||
         n_embd % ggml_blck_size(tg->vec_dot_type) || n_ff % ggml_blck_size(td->vec_dot_type)) {
         err = "native experts: expert geometry is not whole blocks";

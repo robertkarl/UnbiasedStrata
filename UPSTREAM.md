@@ -20,7 +20,8 @@ The first commit of this repository is the upstream snapshot as published. One f
 - **Added:** `frontend/`, the C++ front end (tokenizer, chat template, output parser and HTTP API, using
   llama.cpp's code from the submodule), and a build target that links it with the engine into one binary.
 - **ggml / llama.cpp common (`third_party/llama.cpp`):** one change, kept as
-  `patches/llama.cpp-qwen3-coder-any-argument-order.patch` and applied in the submodule's working tree:
+  `patches/llama.cpp-qwen3-coder-any-argument-order.patch`, applied to the submodule's working tree at CMake
+  configure time (and by `make build`); Qwen3.6's template routes to the same parser:
   the Qwen3-Coder tool-call grammar accepts a call's arguments in any order. Upstream requires the
   required arguments first; Qwen3.8 Flash-Next often writes the optional ones first (`limit`, `offset`,
   `path`), and because the grammar's tool-call group is optional and has no end anchor, such a call was
@@ -73,3 +74,49 @@ c724dc0b0822ada5d2977bf5bde821605feabaa64ea2e0045b67ca656329070a  mtp/dense.bin
 b1e1d3a7a9e4bf862dcd5923ce661fb59bbd07907e594df5cf86a62ac235cb91  mtp/draft_vocab.bin
 09398406be61f1f54c93861f449e48b8df0bfccbc9ec9b2b7636775a6ea9244f  mtp/experts.bin
 ```
+
+## Prepared files for Qwen3.6-35B-A3B
+
+Made with this repository's own tools (Python 3 with `numpy`; `STRATA_GGUF_PY` at `third_party/llama.cpp/gguf-py`),
+from unsloth's files: `Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` and `Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf` of
+[unsloth/Qwen3.6-35B-A3B-GGUF](https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF), and the `-MTP` repository's
+`Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf` (41 blocks; the draft block is `blk.40`) for the draft pack.
+
+```
+export STRATA_GGUF_PY=$PWD/third_party/llama.cpp/gguf-py
+# the pack, one per model file (the tokenizer, the dense weights' index, the expert table, the route profile)
+python3 -I tools/iq_pack.py --gguf Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf --out qwen36-q4
+python3 -I tools/iq_pack.py --gguf Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf --out qwen36-iq3
+cp data/qwen36-expert-profile.bin qwen36-q4/expert-profile.bin        # tools/make_profile.py from the route trace
+cp data/qwen36-expert-profile.bin qwen36-iq3/expert-profile.bin
+# the draft pack, from the -MTP file's draft block; serves either trunk
+python3 -I tools/mtp_qwen36_pack.py --gguf Qwen3.6-35B-A3B-UD-Q4_K_XL-MTP.gguf --out qwen36-mtp-draft
+```
+
+`--draft-vocab none` leaves `draft_vocab.bin` out (the drafter then scores the whole vocabulary: a few percent
+higher acceptance, 345 MiB more VRAM for the head). Building twice gives the same bytes. SHA-256:
+
+```
+9c964e657212fea1f24905dd7b0a89b82fd807d19fab0b41da14251b07b88fbe  Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf
+707a55a8a4397ecde44de0c499d3e68c1ad1d240d1da65826b4949d1043f4450  Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf
+55983c5a75a1ab969824077b3bb3de4146e82a9234072b48ad4e8f92ad3fe9f1  Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf (the -MTP repository's file)
+7c20e11993ff853fe5698843d610b2a87927b04f9a4607551f4e023a39bc71ba  qwen36-q4/conversions.json
+53467f9b49bbc57d570eb8802125144dd4b4d7fd6a658d685ef72005d75a5f4f  qwen36-q4/dense.bin
+eb2ed6c8d86ebe0c16bb7a09af6c24fc4059627cc95e35def07c41568a30283c  qwen36-q4/expert-profile.bin
+1a4725f13e24691a3d6fd10dba4bb6cb217c4831ff8d5529865fc01f39413c79  qwen36-q4/index.txt
+257d84e2d36a2e6572cd0dd8382283defe28bc07c2c97ece22ab6c1bd2f5bff4  qwen36-q4/native_experts.txt
+39bf397e3fb8591ab84cb9142dbd43f665c3bff456e9772c47dc04db5ca28195  qwen36-iq3/conversions.json
+53467f9b49bbc57d570eb8802125144dd4b4d7fd6a658d685ef72005d75a5f4f  qwen36-iq3/dense.bin
+eb2ed6c8d86ebe0c16bb7a09af6c24fc4059627cc95e35def07c41568a30283c  qwen36-iq3/expert-profile.bin
+685d475659736b415a5801413f116a4371970d3cb24b16e53625b98019895c73  qwen36-iq3/index.txt
+820053214b08d3eab1378705fb7c345a724ed0fe16544df07b2f519423bb10e8  qwen36-iq3/native_experts.txt
+4a93092f5716d289367b97ce107d8b08b2236a8e1954bc7f746881875c73d03a  qwen36-mtp-draft/dense.bin
+dd5990d0ef0926252cad59090fa1d00f138db2e3f316eb96691db83940cde339  qwen36-mtp-draft/dense.txt
+b1e1d3a7a9e4bf862dcd5923ce661fb59bbd07907e594df5cf86a62ac235cb91  qwen36-mtp-draft/draft_vocab.bin
+9126741d7e98f0e470cd04bf7ce3c91a89c08c116af02aa2d8d666c4195fdb15  qwen36-mtp-draft/experts.bin
+1e5ad8c088196bc95b49534ce68db9c278635c8a68f7b605ef1776589dea29d7  qwen36-mtp-draft/mtp.json
+048604044d93d7dd4e4e1140deba8ccf681b5c7c11e330e9434a570af42bcfa2  qwen36-mtp-draft/native_experts.txt
+```
+
+(`dense.bin` is byte-identical between the two packs: the dense weights unsloth keeps unquantized are the same in
+both files. The tokenizer directory's files are listed in `qwen36-*/index.txt`.)

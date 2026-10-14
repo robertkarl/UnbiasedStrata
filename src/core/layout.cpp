@@ -2,6 +2,7 @@
 #include "strata/core/layout.hpp"
 
 #include <cstdio>
+#include <cstring>
 
 namespace strata::core {
 namespace {
@@ -81,6 +82,12 @@ bool check_one(const WeightTable& t, const ModelGeometry& g, int64_t layer, std:
     for (const Want2& w : want2) {
         if (w.qsa_only && !qsa) continue;
         if (w.gdn_only && qsa) continue;
+        // hc = 1 (Qwen3.6): no hyper-connections, so no `hc_*` tensors - the plain block reads `attn_norm` and
+        // `post_attention_norm` instead (the 1-D set below; docs/QWEN36-35B-A3B.md section 3.5)
+        if (g.hc == 1 && std::strncmp(w.suffix, "hc_", 3) == 0) continue;
+        // dense attention (Qwen3.6): no sparse indexer, so no `indexer.*` tensors in the file or the pack; `qsa_layer`
+        // and the verify window ask for them only with `g.has_indexer()` (step3-attn.md), and so does this check
+        if (!g.has_indexer() && std::strncmp(w.suffix, "indexer.", 8) == 0) continue;
         const WeightRef* r = v.get(w.suffix);
         if (!r) {
             err = "layer " + std::to_string(layer) + ": missing " + v.name(w.suffix);
@@ -96,6 +103,10 @@ bool check_one(const WeightTable& t, const ModelGeometry& g, int64_t layer, std:
     const Want1 want1[] = {
         {"hc_attn_norm.weight", g.hc_dim(), WeightKind::F32, false, false},
         {"hc_ffn_norm.weight", g.hc_dim(), WeightKind::F32, false, false},
+        // the plain block's two norms (hc = 1 only; F32 in the file, kept F32 in the pack: layer.cpp reads them as
+        // `const float*`).  At hc > 1 these names do not exist and are skipped below.
+        {"attn_norm.weight", g.n_embd, WeightKind::F32, false, false},
+        {"post_attention_norm.weight", g.n_embd, WeightKind::F32, false, false},
         {"ffn_gate_inp_shexp.weight", g.n_embd, WeightKind::Bf16InF32, false, false},
         {"ssm_a", g.ssm_v_heads, WeightKind::F32, false, true},
         {"ssm_dt.bias", g.ssm_v_heads, WeightKind::F32, false, true},
@@ -108,6 +119,11 @@ bool check_one(const WeightTable& t, const ModelGeometry& g, int64_t layer, std:
     for (const Want1& w : want1) {
         if (w.qsa_only && !qsa) continue;
         if (w.gdn_only && qsa) continue;
+        const bool hc_tensor = std::strncmp(w.suffix, "hc_", 3) == 0;
+        const bool plain_norm = std::strcmp(w.suffix, "attn_norm.weight") == 0 ||
+                                std::strcmp(w.suffix, "post_attention_norm.weight") == 0;
+        if (g.hc == 1 ? hc_tensor : plain_norm) continue;
+        if (!g.has_indexer() && std::strncmp(w.suffix, "indexer.", 8) == 0) continue;
         const WeightRef* r = v.get(w.suffix);
         if (!r) {
             err = "layer " + std::to_string(layer) + ": missing " + v.name(w.suffix);

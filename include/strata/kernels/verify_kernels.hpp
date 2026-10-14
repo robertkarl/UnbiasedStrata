@@ -14,6 +14,8 @@
 // Everything that varies per window (token ids, `n_keep`) is read from DEVICE memory so the kernels can be captured.
 #pragma once
 
+#include "strata/kernels/gdn.hpp"
+
 #include <cstdint>
 
 namespace strata::kernels {
@@ -31,9 +33,10 @@ void gdn_ab_multi(const float* x, const uint16_t* w_alpha, const uint16_t* w_bet
                   float* gate, float* beta, int n_embd, int h_v, int n_tok, void* stream);
 /// The recurrence + output norm for T tokens (h = (T, conv_channels) as q|k|v, gate/beta (T, h_v), z/y
 /// (T, value_dim)).  With `n_keep == nullptr` the state is read and NOT written (verify); otherwise the first
-/// *n_keep tokens are run and the state is written (commit; `y` may be scratch).  Bitwise `fused_gdn_step_norm`.
+/// *n_keep tokens are run and the state is written (commit; `y` may be scratch).  Bitwise `fused_gdn_step_norm`,
+/// including its output gate `act` (sigmoid for Flash-Next, SiLU for Qwen3.6: `GdnGate`).
 void gdn_step_norm_multi(float* state, const float* h, int conv_channels, const float* gate, const float* beta,
-                         const float* z, const float* gamma, float eps, float* y, int h_k, int h_v, int n_tok,
+                         const float* z, const float* gamma, float eps, GdnGate act, float* y, int h_k, int h_v, int n_tok,
                          const int32_t* n_keep, void* stream, int t_out_begin = 0);
 /// Spin until *flag >= value (a mapped host flag).  The value is fixed at capture, so several rings can be
 /// outstanding at once (the split verify window keeps two).

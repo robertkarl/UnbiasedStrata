@@ -1,4 +1,5 @@
 // src/core/verify.cpp - see include/strata/core/verify.hpp.
+#include "strata/core/qsa_shapes.hpp"
 #include "strata/core/verify.hpp"
 #include "strata/core/remote_expert_opt.hpp"
 #if defined(_WIN32)
@@ -98,15 +99,8 @@ bool mapped(size_t bytes, void** h, void** d) {
     return cudaHostGetDevicePointer(d, *h, 0) == cudaSuccess;
 }
 
-strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) {
-    strata::kernels::QsaShapes s = strata::kernels::qsa_real_shapes();
-    s.n_head = g.n_head;
-    s.n_head_kv = g.n_head_kv;
-    s.head_dim = g.head_dim;
-    s.idx_n_head = g.idx_q_heads;
-    s.idx_dim = g.idx_key_dim;
-    return s;
-}
+// the one builder (strata/core/qsa_shapes.hpp): a dense geometry has its three indexer widths zero together
+strata::kernels::QsaShapes shapes_of(const ModelGeometry& g) { return strata::core::qsa_shapes(g); }
 
 const WeightRef* need(const LayerView& v, const char* suffix, std::string& err) {
     const WeightRef* r = v.get(suffix);
@@ -124,6 +118,30 @@ bool native_of(const WeightRef* w, const std::string& name, std::string& err) {
 }
 
 }  // namespace
+
+bool verify_geometry_supported(const ModelGeometry& g, int64_t k, std::string& why) {
+    if (g.hc > 1 && !strata::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr)) {
+        why = "the fused hyper-connection read is built for n_embd 2560, hc 4, hc_lr 320, not " +
+              std::to_string(g.n_embd) + " / " + std::to_string(g.hc) + " / " + std::to_string(g.hc_lr);
+        return false;
+    }
+    if (k != g.n_expert_used) {
+        why = "the session routes top-" + std::to_string(k) + " but the file routes top-" +
+              std::to_string(g.n_expert_used) + " of " + std::to_string(g.n_expert) +
+              " experts (expert_used_count); the window reproduces the file's k";
+        return false;
+    }
+    if (k < 1 || k > g.n_expert) {
+        why = "k " + std::to_string(k) + " is outside 1.." + std::to_string(g.n_expert) + " experts";
+        return false;
+    }
+    if (g.ssm_state_size != 128 || g.ssm_d_conv != 4) {
+        why = "the T-token GDN kernels are built for state 128 and conv 4, not " + std::to_string(g.ssm_state_size) +
+              " / " + std::to_string(g.ssm_d_conv);
+        return false;
+    }
+    return true;
+}
 
 namespace {
 std::atomic<const Verifier*> g_diag_verifier{nullptr};
@@ -329,13 +347,12 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         return false;
     }
     std::string why;
-    if (!layer_verify_compatible(why)) {
+    if (!layer_verify_compatible(g, why)) {
         err = "verify: " + why + " (the verify window reproduces the default native decode path)";
         return false;
     }
-    if (!strata::kernels::fused_gr_supported(g.n_embd, g.hc, g.hc_lr) || ss.k != 10 || g.ssm_state_size != 128 ||
-        g.ssm_d_conv != 4) {
-        err = "verify: geometry differs from the artifact's";
+    if (!verify_geometry_supported(g, ss.k, why)) {
+        err = "verify: " + why;
         return false;
     }
     if (le_ < 0) le_ = g.n_layers;
@@ -349,8 +366,9 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
     n_vocab_ = wo->ne1;
 
     const strata::kernels::QsaShapes s = shapes_of(g);
-    cap_ = strata::kernels::qsa_selection_width(strata::kernels::kTopkMaxCells, s);
+    cap_ = strata::kernels::qsa_selection_cap(ss.qsa_states[ss.qsa_primary()].max_cells, s);   // dense: max_cells
     max_blocks_ = ss.qsa_states[ss.qsa_primary()].max_cells / s.idx_block + 2;
+    const bool dense = strata::kernels::qsa_dense(s);   // Qwen3.6: no indexer, no selection buffers (3.3)
     attn_scratch_floats_ = (int64_t) strata::kernels::qsa_decode_attn_scratch_floats(cap_, s);
 
     const uint64_t T = (uint64_t) max_t, N = (uint64_t) g.n_embd, HC = (uint64_t) g.hc, K = (uint64_t) ss.k;
@@ -417,7 +435,7 @@ bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState&
         qfull_ = b.take<float>(T * NH * 2 * HD); qcur_ = b.take<float>(T * NH * HD);
         kcur_ = b.take<float>(T * NKV * HD); vcur_ = b.take<float>(T * NKV * HD);
         idx_raw_L_ = b.take<float>(nQ * T * ID); qidx_ = b.take<float>(T * IQ * ID);
-        scores_ = b.take<float>(T * (uint64_t) max_blocks_); sel_ = b.take<int32_t>(T * (uint64_t) cap_);
+        if (!dense) { scores_ = b.take<float>(T * (uint64_t) max_blocks_); sel_ = b.take<int32_t>(T * (uint64_t) cap_); }
         attn_ = b.take<float>(T * NH * HD); attn32_ = b.take<float>(T * NH * HD);
         attn_scratch_ = b.take<float>(T * (uint64_t) attn_scratch_floats_);
         tail_snap_ = b.take<float>(nQ * TS);
@@ -557,7 +575,23 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     const int64_t HS = (int64_t) NG_HIST * NG_HC_DIM;
     const int64_t TS = (s.idx_block - 1) * ID;
     const bool ple_on = ss.ple.ready() && ple_stage();
-    auto Rt = [&](int t) { return R_ + (size_t) t * HC * N; };
+    if (HC == 1 && ple_on) {
+        err = "verify: the plain block (hc = 1) has no per-layer embedding, but the session's PLE is wired";
+        return false;
+    }
+    const float eps = (float) g.rms_eps;
+    auto Rt = [&](int t) { return R_ + (size_t) t * HC * N; };   // at hc = 1 the rows are contiguous: Rt(tb) spans n rows
+    // hc = 1: the plain block's F32 norm weights (layer.hpp, "the plain block"), checked as layer.cpp checks them
+    auto plain_w = [&](const LayerView& v, const char* suffix) -> const float* {
+        const WeightRef* w = need(v, suffix, err);
+        if (w == nullptr) return nullptr;
+        if (w->kind != WeightKind::F32 || w->elements != N || w->data == nullptr) {
+            err = v.name(suffix) + " is engine form " + std::to_string((int) w->kind) + " of " +
+                  std::to_string(w->elements) + " elements; the plain block reads F32 x " + std::to_string(N);
+            return nullptr;
+        }
+        return (const float*) w->data;
+    };
     const int G = (split_ && T >= 2 && !batch_rec_) ? 2 : 1;   // a batch window is one group
     static const bool dec_batch = [] { const char* v = std::getenv("STRATA_DEC_BATCH"); return v == nullptr || std::atoi(v) != 0; }();
     auto stamp = [&](int64_t l, int i, int grp) {
@@ -622,7 +656,14 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         stamp(l, 0, grp);
         const LayerView v(wt, l);
         const char* pfx[2] = {"hc_attn_", "hc_ffn_"};
-        const WeightRef *wn[2], *wd[2], *wu[2], *wi[2];
+        const WeightRef *wn[2] = {}, *wd[2] = {}, *wu[2] = {}, *wi[2] = {};
+        const float *w_attn = nullptr, *w_post = nullptr;   // hc = 1: the plain block's two norms
+        if (HC == 1) {
+            w_attn = plain_w(v, "attn_norm.weight");
+            if (w_attn == nullptr) return false;
+            w_post = plain_w(v, "post_attention_norm.weight");
+            if (w_post == nullptr) return false;
+        } else
         for (int h = 0; h < 2; ++h) {
             wn[h] = need(v, (std::string(pfx[h]) + "norm.weight").c_str(), err);
             wd[h] = need(v, (std::string(pfx[h]) + "down.weight").c_str(), err);
@@ -631,8 +672,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             if (!wn[h] || !wd[h] || !wu[h] || !wi[h]) return false;
         }
         // the previous layer's FFN write, folded into this layer's first read (a control vector after it has
-        // already applied it)
-        bool pending = l > 0 && !cvec().covers(l - 1);
+        // already applied it); the plain block has no pending write (its residual adds are applied in place)
+        bool pending = HC > 1 && l > 0 && !cvec().covers(l - 1);
         if (l == 1 && ple_on) {
             if (grp == 0) {
                 if (all_resident_) wait_flag_ge(m_flag_, 1, cs);
@@ -693,9 +734,16 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             fused_gr_read_multi(fa, n, xn_ + (size_t) tb * HC * N, cs, (prof_on_ && grp == 0) ? prof_ : nullptr,
                                 (int) (l * kProfPer + (half == 0 ? 27 : 30)));
         };
-        gr_read_group(0, pending, inj2_, inj_);
-        stamp(l, 1, grp);
         float* xm = mixed_ + tb * N;
+        try {
+            // x = rms_norm(R) * attn_norm over the group's n rows (`attn_norm-N`), or the GR read
+            if (HC == 1) plain_norm_rows(Rt(tb), w_attn, xm, N, eps, n, cs);
+            else gr_read_group(0, pending, inj2_, inj_);
+        } catch (const std::exception& e) {
+            err = "verify layer " + std::to_string(l) + " attn_norm: " + e.what();
+            return false;
+        }
+        stamp(l, 1, grp);
         try {
             if (!is_qsa_layer(g, l)) {
                 // ======================= GDN =======================
@@ -741,12 +789,12 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         SessionState& sx = slot_ss(t);
                         float* stx = sx.gdn_state + (size_t) (gi - sx.gdn_ord0) * gdn_floats;
                         gdn_step_norm_multi(stx, hb + (size_t) t * C, (int) C, gate + (size_t) t * HV, beta + (size_t) t * HV,
-                                            z_ + (size_t) t * ZV, (const float*) wnm->data, EPS, y_ + (size_t) t * ZV,
-                                            (int) HK, (int) HV, 1, nullptr, cs, 0);
+                                            z_ + (size_t) t * ZV, (const float*) wnm->data, EPS, g.gdn_gate(),
+                                            y_ + (size_t) t * ZV, (int) HK, (int) HV, 1, nullptr, cs, 0);
                     }
                 } else
-                gdn_step_norm_multi(state, hb, (int) C, gate, beta, z_, (const float*) wnm->data, EPS, y_, (int) HK,
-                                    (int) HV, te, nullptr, cs, tb);
+                gdn_step_norm_multi(state, hb, (int) C, gate, beta, z_, (const float*) wnm->data, EPS, g.gdn_gate(), y_,
+                                    (int) HK, (int) HV, te, nullptr, cs, tb);
                 stamp(l, 6, grp);
                 native_quantize_q8_1(y_ + (size_t) tb * ZV, xq_, (int) ZV, n, cs);
                 native_mmvq(wout->native_type, wout->native_data, xq_, bo_ + tb * N, (int) ZV, (int) N, n, cs);
@@ -754,12 +802,18 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 // ======================= QSA =======================
                 const int64_t qi = qsa_idx[(size_t) l];
                 const QsaState& st = ss.qsa_states[qi];
-                const WeightRef *wik = need(v, "indexer.k_proj.weight", err), *wq = need(v, "attn_q.weight", err),
+                // Qwen3.6 (3.3): dense attention - no indexer tensors, no raw key, no scores, no top-k; the split-K
+                // kernel reads every cell (a null ids is the identity) with the width n_kv from each row's step
+                const bool has_idx = g.has_indexer();
+                const WeightRef *wq = need(v, "attn_q.weight", err),
                                 *wk = need(v, "attn_k.weight", err), *wv = need(v, "attn_v.weight", err),
-                                *wo = need(v, "attn_output.weight", err), *wiq = need(v, "indexer.q_proj.weight", err),
-                                *wqn = need(v, "attn_q_norm.weight", err), *wkn = need(v, "attn_k_norm.weight", err),
-                                *wiqn = need(v, "indexer.q_norm.weight", err), *wikn = need(v, "indexer.k_norm.weight", err);
-                if (!wik || !wq || !wk || !wv || !wo || !wiq || !wqn || !wkn || !wiqn || !wikn) return false;
+                                *wo = need(v, "attn_output.weight", err),
+                                *wqn = need(v, "attn_q_norm.weight", err), *wkn = need(v, "attn_k_norm.weight", err);
+                const WeightRef *wik = has_idx ? need(v, "indexer.k_proj.weight", err) : nullptr,
+                                *wiq = has_idx ? need(v, "indexer.q_proj.weight", err) : nullptr,
+                                *wiqn = has_idx ? need(v, "indexer.q_norm.weight", err) : nullptr,
+                                *wikn = has_idx ? need(v, "indexer.k_norm.weight", err) : nullptr;
+                if (!wq || !wk || !wv || !wo || !wqn || !wkn || (has_idx && (!wik || !wiq || !wiqn || !wikn))) return false;
                 if (!native_of(wq, v.name("attn_q.weight"), err) || !native_of(wk, v.name("attn_k.weight"), err) ||
                     !native_of(wv, v.name("attn_v.weight"), err) || !native_of(wo, v.name("attn_output.weight"), err))
                     return false;
@@ -774,7 +828,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 // window's rows each - row-wise identical arithmetic (STRATA_DEC_BATCH=0: token by token)
                 const bool qb = dec_batch && n > 1 && native_qsa_enabled() && native_rope_enabled() && !st.kv_q4;
                 native_quantize_q8_1(xm, xq_, (int) N, n, cs);
-                if (qb) bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wik->data, idx_raw + tb * ID, ID, N, ID, n, cs);
+                if (!has_idx) {}
+                else if (qb) bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wik->data, idx_raw + tb * ID, ID, N, ID, n, cs);
                 else for (int t = tb; t < te; ++t)
                     bf16_gemv_fp32_mmvf(mixed_ + t * N, (const uint16_t*) wik->data, idx_raw + t * ID, (int) N, (int) ID, cs);
                 stamp(l, 7, grp);
@@ -789,7 +844,8 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     fwht256_inplace_cuda(vcur_ + tb * NKV * HD, (int64_t) n * NKV, cs);
                 }
                 stamp(l, 8, grp);
-                if (batch_rec_) {   // every slot's indexer tail, restored by its commit
+                if (!has_idx) {}
+                else if (batch_rec_) {   // every slot's indexer tail, restored by its commit
                     for (int t = tb; t < te; ++t)
                         copy_from_mapped(tail_snap_b_ + ((size_t) brow_[t] * nQall + qi) * TS, slot_ss(t).qsa_states[qi].idx_tail,
                                          TS, cs);
@@ -813,6 +869,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                         kv_append_step(st.k_pool, st.v_pool, st.page_table, step_t, kcur_ + t * NKV * HD,
                                        vcur_ + t * NKV * HD, s, cs, &st.host);
                 }
+                if (has_idx)
                 for (int t = tb; t < te; ++t) {
                     const QsaState& sx = slot_ss(t).qsa_states[qi];
                     const QsaIndexerBuffers ib{sx.idx_tail, sx.idx_dead, sx.idx_pooled, sx.idx_block_pos};
@@ -831,9 +888,11 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     }
                     norm_rope(qcur_ + tb * NH * HD, wqn, (int) (n * NH), (int) HD, pos_ + tb * NH);
                     if (st.kv_rot) fwht256_inplace_cuda(qcur_ + tb * NH * HD, (int64_t) n * NH, cs);   // <Hq, Hk> = <q, k>
+                    if (has_idx) {
                     bf16_gemv_fp32_mmvf_multi(mixed_ + tb * N, N, (const uint16_t*) wiq->data, qidx_ + tb * IQ * ID, IQ * ID,
                                               N, IQ * ID, n, cs);
                     norm_rope(qidx_ + tb * IQ * ID, wiqn, (int) (n * IQ), (int) ID, pos_i + tb * IQ);
+                    }
                 } else {
                 for (int t = tb; t < te; ++t) {
                     float* qc = qcur_ + t * NH * HD;
@@ -845,6 +904,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                     norm_rope(qc, wqn, (int) NH, (int) HD, pos_ + t * NH);
                     if (st.kv_rot) fwht256_inplace_cuda(qc, NH, cs);   // <Hq, Hk> = <q, k>
                 }
+                if (has_idx)
                 for (int t = tb; t < te; ++t) {
                     float* qx = qidx_ + t * IQ * ID;
                     bf16_gemv_fp32_mmvf(mixed_ + t * N, (const uint16_t*) wiq->data, qx, (int) N, (int) (IQ * ID), cs);
@@ -852,6 +912,20 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 }
                 }
                 stamp(l, 10, grp);
+                if (!has_idx && batch_rec_) {   // dense, each row over its own slot's K/V: every cell, no ids
+                    for (int t = tb; t < te; ++t) {
+                        const QsaState& sx = slot_ss(t).qsa_states[qi];
+                        const QsaAttnPools px = qsa_attn_pools(sx);
+                        qsa_decode_attn_batch(qcur_ + t * NH * HD, px, nullptr, step_ + t * kStepCount, cap_, s,
+                                              attn_scratch_ + (size_t) t * attn_scratch_floats_, attn_ + t * NH * HD, 1, cs);
+                    }
+                } else if (!has_idx) {   // dense: the n rows over every cell of the shared state, no ids
+                    stamp(l, 11, grp);
+                    stamp(l, 12, grp);
+                    const QsaAttnPools pools = qsa_attn_pools(st);
+                    qsa_decode_attn_batch(qcur_ + tb * NH * HD, pools, nullptr, step_ + tb * kStepCount, cap_, s,
+                                          attn_scratch_ + (size_t) tb * attn_scratch_floats_, attn_ + tb * NH * HD, n, cs);
+                } else
                 if (batch_rec_) {   // each row selects and attends over its own slot's K/V
                     for (int t = tb; t < te; ++t) {
                         const QsaState& sx = slot_ss(t).qsa_states[qi];
@@ -899,7 +973,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
             return false;
         }
         stamp(l, 16, grp);
-        gr_read_group(1, true, inj_, inj2_);
+        try {
+            if (HC == 1) {   // R += mixer out (`attn_residual-N`), then x = rms_norm(R) * post_attention_norm
+                plain_residual_rows(Rt(tb), bo_ + tb * N, N, n, cs);
+                plain_norm_rows(Rt(tb), w_post, xm, N, eps, n, cs);
+            } else gr_read_group(1, true, inj_, inj2_);
+        } catch (const std::exception& e) {
+            err = "verify layer " + std::to_string(l) + " post_attention_norm: " + e.what();
+            return false;
+        }
         static const bool sh_stream_env = [] {
             const char* e = std::getenv("STRATA_SH_STREAM");
             return !e || e[0] != '0';
@@ -998,7 +1080,7 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         const char* e = std::getenv("STRATA_FUSE_HEAD_GR");
         return e && e[0] == '1';
     }();
-    const bool fuse_head_gr = fuse_head_gr_env && (le_ == g.n_layers) && (head_ != nullptr && head_->loaded()) &&
+    const bool fuse_head_gr = fuse_head_gr_env && HC > 1 && (le_ == g.n_layers) && (head_ != nullptr && head_->loaded()) &&
                               !cvec().covers(g.n_layers - 1);
     auto post = [&](int64_t l, int grp) -> bool {
         const int tb = tb_[grp], te = te_[grp], n = te - tb;
@@ -1091,7 +1173,15 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
         if (remote_opt_) remote_opt_->combine(bo_ + tb * N, y_dummy_ + tb * N, tb, n,
                               device_plan_ ? skip_ + grp : nullptr, ring, cs);
         stamp(l, 24, grp);
-        if (l == g.n_layers - 1) {
+        if (HC == 1) {   // R += ffn out (`l_out-N`): in place, every layer; then a control vector if one covers it
+            try {
+                plain_residual_rows(Rt(tb), bo_ + tb * N, N, n, cs);
+                if (cvec().covers(l)) cvec_apply(Rt(tb), l, n, N, nullptr, 0, nullptr, 0, false, cs);
+            } catch (const std::exception& e) {
+                err = "verify layer " + std::to_string(l) + " residual: " + e.what();
+                return false;
+            }
+        } else if (l == g.n_layers - 1) {
             if (!fuse_head_gr) {
                 for (int t = tb; t < te; ++t) gr_write(Rt(t), bo_ + t * N, inj2_ + t * HC, gs, Rt(t), cs);
                 if (cvec().covers(l)) cvec_apply(Rt(tb), l, n, HC * N, nullptr, 0, nullptr, 0, false, cs);
@@ -1120,10 +1210,24 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
     // ---- the head, T columns, and the argmax of each
     stamp(g.n_layers, 0, 0);
     {
-        const WeightRef *hn = wt.find("output_hc_norm.weight"), *hd = wt.find("output_hc_down.weight"),
-                        *hu = wt.find("output_hc_up.weight");
-        if (!hn || !hd || !hu) { err = "verify: an output_hc_* weight is missing"; return false; }
-        if (fuse_head_gr) {
+        const WeightRef *hn = nullptr, *hd = nullptr, *hu = nullptr;
+        if (HC > 1) {
+            hn = wt.find("output_hc_norm.weight"); hd = wt.find("output_hc_down.weight"); hu = wt.find("output_hc_up.weight");
+            if (!hn || !hd || !hu) { err = "verify: an output_hc_* weight is missing"; return false; }
+        }
+        if (HC == 1 && head_ != nullptr && head_->loaded()) {
+            // the plain head: `result_norm = rms_norm(R) * output_norm` for the T rows in one launch (row t is the
+            // single-token `lm_head_mix`); the canonical head below goes through `lm_head`, which branches the same way
+            const WeightRef* wn = wt.find("output_norm.weight");
+            if (wn == nullptr) { err = "verify: output_norm.weight is missing (the plain block's head norm)"; return false; }
+            if (wn->kind != WeightKind::F32 || wn->elements != N || wn->data == nullptr) {
+                err = "verify: output_norm.weight is engine form " + std::to_string((int) wn->kind) + " of " +
+                      std::to_string(wn->elements) + " elements; the plain head reads F32 x " + std::to_string(N);
+                return false;
+            }
+            try { plain_norm_rows(R_, (const float*) wn->data, head_mixed_, N, eps, T, cs); }
+            catch (const std::exception& e) { err = std::string("verify output_norm: ") + e.what(); return false; }
+        } else if (fuse_head_gr) {
             FusedGrArgs fa[kFusedGrMaxT];
             for (int t = 0; t < T; ++t) {
                 FusedGrArgs& a = fa[t];
@@ -1292,9 +1396,13 @@ bool Verifier::capture_commit(std::string& err) {
                 const float* qkv = qkv_L_ + (size_t) gdn_index * MT * C;
                 gdn_conv_commit(conv, qkv, (int) C, commit_, cs_);
                 gdn_step_norm_multi(state, h_L_ + (size_t) gdn_index * MT * C, (int) C, gate_L_ + (size_t) gdn_index * MT * HV,
-                                    beta_L_ + (size_t) gdn_index * MT * HV, z_, (const float*) wnm->data, EPS, y_dummy_,
-                                    (int) g.ssm_k_heads, (int) HV, (int) MT, commit_, cs_, (int) MT);
+                                    beta_L_ + (size_t) gdn_index * MT * HV, z_, (const float*) wnm->data, EPS, g.gdn_gate(),
+                                    y_dummy_, (int) g.ssm_k_heads, (int) HV, (int) MT, commit_, cs_, (int) MT);
                 ++gdn_index;
+            } else if (!g.has_indexer()) {
+                // dense attention (Qwen3.6): no indexer key tail to restore; the K/V cells past the accepted prefix
+                // are overwritten when those positions are processed again (the header's STATE paragraph)
+                ++qsa_index;
             } else {
                 const QsaState& st = ss.qsa_states[qsa_index];
                 const WeightRef* wikn = need(v, "indexer.k_norm.weight", err);
@@ -1845,10 +1953,12 @@ bool Verifier::capture_commit_batch(const int* rows, int S, int hbase, std::stri
                     gdn_step_norm_multi(state, h_L_ + (size_t) gdn_index * MT * C + (size_t) t * C, (int) C,
                                         gate_L_ + (size_t) gdn_index * MT * HV + (size_t) t * HV,
                                         beta_L_ + (size_t) gdn_index * MT * HV + (size_t) t * HV, z_ + (size_t) t * ZV,
-                                        (const float*) wnm->data, EPS, y_dummy_ + (size_t) t * ZV, (int) g.ssm_k_heads,
-                                        (int) HV, 1, keep, cs_);
+                                        (const float*) wnm->data, EPS, g.gdn_gate(), y_dummy_ + (size_t) t * ZV,
+                                        (int) g.ssm_k_heads, (int) HV, 1, keep, cs_);
                 }
                 ++gdn_index;
+            } else if (!g.has_indexer()) {
+                ++qsa_index;   // dense attention: no indexer tail (as in capture_commit)
             } else {
                 const WeightRef* wikn = need(v, "indexer.k_norm.weight", err);
                 if (!wikn) { ok = false; break; }

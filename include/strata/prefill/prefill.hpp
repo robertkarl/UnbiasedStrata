@@ -135,6 +135,17 @@ public:
     /// Checked before every chunk: true stops the prompt early (`run` returns false with err "cancelled").
     std::function<bool()> should_stop;
 
+    /// A test's view of the layer loop (null, the default: never called; nothing else changes).  Called on the
+    /// compute stream's order with a DEVICE buffer of `rows` x `cols` floats at the chunk's first position `p0`,
+    /// named by llama.cpp's seam names (docs/qwen36-port/oracle-crosscheck.md): "l_in" (the layer's input residual
+    /// rows, hc * n_embd wide, before anything of the layer ran: a test may overwrite them, which is how the
+    /// Qwen3.6 harness teacher-forces every layer's input), "attn_norm" / "attn_post_norm" (the plain block's normed
+    /// input of each half, n_embd), "linear_attn_out" / "attn_output" / "ffn_out" (the mixer's output before the
+    /// residual, n_embd), "ffn_moe_topk" (the router's ids as int32 [rows, k], passed as floats), "l_out" (the
+    /// residual after the layer).  The callback may synchronize the stream; false with `err` stops the prompt.
+    std::function<bool(const char* seam, int64_t layer, float* rows_dev, int64_t rows, int64_t cols, int64_t p0,
+                       std::string& err)> on_seam;
+
     /// The vision path: HOST rows (n_embd floats) indexed by absolute position, read in place of the token
     /// embedding where non-null (an image's <|image_pad|> cells).  Null (default): every position embeds its token.
     const float* const* embd_rows = nullptr;

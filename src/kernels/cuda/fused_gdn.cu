@@ -19,7 +19,7 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_kernel(float* __restrict
                                                                const float* __restrict__ beta,
                                                                const float* __restrict__ z,
                                                                const float* __restrict__ gamma, float eps,
-                                                               float* __restrict__ y, int h_k, int h_v) {
+                                                               float* __restrict__ y, int h_k, int h_v, int silu) {
     __shared__ float sk[S], sq[S];
     __shared__ float red[RG][S];
     __shared__ float wsum[S * RG / 32];
@@ -66,7 +66,9 @@ __global__ void __launch_bounds__(S * RG) gdn_step_norm_kernel(float* __restrict
         const float ss = wsum[0] + wsum[1] + wsum[2] + wsum[3];
         const float scale = rsqrtf(ss / (float) S + eps);
         const float zz = z[head * S + col];
-        y[head * S + col] = oc * scale * gamma[col] * (1.0f / (1.0f + __expf(-zz)));
+        // the gate: sigmoid(z) for Flash-Next (unchanged arithmetic), SiLU(z) = z / (1 + exp(-z)) for Qwen3.6
+        const float act = silu ? zz / (1.0f + __expf(-zz)) : (1.0f / (1.0f + __expf(-zz)));
+        y[head * S + col] = oc * scale * gamma[col] * act;
     }
 }
 
@@ -148,14 +150,15 @@ void fused_gdn_ab(const float* x, const uint16_t* w_alpha, const uint16_t* w_bet
 }
 
 void fused_gdn_step_norm(float* state, const float* q, const float* k, const float* v, const float* gate,
-                         const float* beta, const float* z, const float* gamma, float eps, float* y, int h_k, int h_v,
-                         void* stream) {
+                         const float* beta, const float* z, const float* gamma, float eps, GdnGate act, float* y,
+                         int h_k, int h_v, void* stream) {
     if (!state || !q || !k || !v || !gate || !beta || !z || !gamma || !y || h_k <= 0 || h_v <= 0 || h_v % h_k) {
         std::fprintf(stderr, "fused_gdn_step_norm: invalid arguments\n");
         std::exit(1);
     }
     gdn_step_norm_kernel<<<(unsigned) h_v, dim3(S, RG), 0, (cudaStream_t) stream>>>(state, q, k, v, gate, beta, z,
-                                                                                   gamma, eps, y, h_k, h_v);
+                                                                                   gamma, eps, y, h_k, h_v,
+                                                                                   act == GdnGate::Silu ? 1 : 0);
     const cudaError_t e = cudaGetLastError();
     if (e != cudaSuccess) {
         std::fprintf(stderr, "fused_gdn_step_norm: %s\n", cudaGetErrorString(e));

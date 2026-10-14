@@ -34,12 +34,25 @@
 
 namespace strata::kernels {
 
-/// Geometry of one GDN layer.  The real artifact: S = 128, h_k = 16, h_v = 48.
+/// Geometry of one GDN layer.  Flash-Next: S = 128, h_k = 16, h_v = 48 (VPK 3); Qwen3.6-35B-A3B: S = 128,
+/// h_k = 16, h_v = 32 (VPK 2).  Every kernel here takes these at runtime; `h_v % h_k == 0` is the one rule.
 struct GdnShapes {
     int64_t S = 0;    ///< head dim, and the state's contracted axis
     int64_t h_k = 0;  ///< key/query heads (q and k are (h_k, S))
     int64_t h_v = 0;  ///< value heads (v, z, o are (h_v, S)); h_v must be a multiple of h_k
 };
+
+/// The output gate's activation on `z` in `y = rms_norm(o) * ssm_norm * act(z)`.  Flash-Next (`qwen4exp`) multiplies
+/// by sigmoid(z); Qwen3.6 (`qwen35moe`) by SiLU(z) = z * sigmoid(z) - llama.cpp `qwen35moe.cpp:273` is `ggml_silu`,
+/// and `qwen4exp.cpp:481` calls it "the one numerical difference".  The oracle's negative control puts the two
+/// readings 1.07 relative L1 apart at `final_output-0` (docs/qwen36-port/oracle-crosscheck.md), so this is a
+/// per-model contract, not a tuning knob: the layer picks it from `ModelGeometry::arch`
+/// (`ModelGeometry::gdn_gate()`), never from a global, so one process can serve both models.  Every GDN output
+/// kernel takes it as an argument (`gdn_out_norm`, `fused_gdn_step_norm`, `native_gdn_out_norm`,
+/// `gdn_step_norm_multi`); the sigmoid arithmetic is bitwise what it was before the parameter existed.
+enum class GdnGate : int { Sigmoid = 0, Silu = 1 };
+
+inline const char* gdn_gate_name(GdnGate g) { return g == GdnGate::Silu ? "silu" : "sigmoid"; }
 
 /// One step of the delta-rule recurrence, IN PLACE on `state`.
 ///
@@ -87,11 +100,11 @@ void gdn_l2_norm(float* x, int64_t rows, int64_t cols, float eps, void* stream);
 /// `ref/gdn.py` and `ref/model.py` both sigmoid it; this call is what makes the C++ agree with them.
 void gdn_beta_gate(float* beta, int64_t h_v, void* stream);
 
-/// The layer's closing norm: `y = rms_norm(o, eps) * ssm_norm * sigmoid(z)`.
+/// The layer's closing norm: `y = rms_norm(o, eps) * ssm_norm * act(z)`, `act` per `GdnGate`.
 ///
-/// Note SIGMOID, not SiLU - qwen3.5 used SiLU and this artifact does not, and `ref/gdn.py` says so outright.
+/// SIGMOID for Flash-Next (`ref/gdn.py` says so outright), SiLU for Qwen3.6 (`ref/qwen36.py`, qwen35moe.cpp:273).
 /// The norm is over the LAST axis: one RMS per head, so it is per-ROW here and not over the whole (h_v, S).
 void gdn_out_norm(const float* o, const float* z, const float* ssm_norm, float* y, int64_t h_v, int64_t S,
-                  float eps, void* stream);
+                  float eps, GdnGate act, void* stream);
 
 }  // namespace strata::kernels

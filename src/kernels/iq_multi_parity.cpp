@@ -405,6 +405,7 @@ int main(int argc, char** argv) {
     for (int gu : {16, 17, 18, 21, 22, 23, 29, 42}) {
         for (int dt : {20, 42}) check_grouped(gu, dt, 2560, 640, s, rng);   // the model's shape
         check_grouped(gu, 23, 1024, 512, s, rng);                           // IQ4_XS down needs n_ff % 256 == 0
+        check_grouped(gu, 18, 1024, 512, s, rng);                           // IQ3_XXS down (Qwen3.6 UD-IQ3_XXS)
     }
     check_q8_1_finite(s, rng);
     if (do_bench) bench(s, rng);

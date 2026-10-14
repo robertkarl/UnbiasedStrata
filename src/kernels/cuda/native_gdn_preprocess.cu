@@ -97,7 +97,7 @@ __global__ void gate_softplus(const float* __restrict__ alpha, const float* __re
 }
 
 __global__ void out_norm(const float* __restrict__ input, const float* __restrict__ z,
-                          const float* __restrict__ gamma, float* __restrict__ output, float epsilon) {
+                          const float* __restrict__ gamma, float* __restrict__ output, float epsilon, int silu) {
     const int col = threadIdx.x;
     const size_t offset = size_t(blockIdx.x) * S;
     const float value = col < S ? input[offset + col] : 0.0f;
@@ -107,9 +107,11 @@ __global__ void out_norm(const float* __restrict__ input, const float* __restric
     partial = norm_sum(partial, sums);
     const float scale = rsqrtf(partial / S + epsilon);
     if (col < S) {
-        // RMSNorm+gamma is one pinned fused operator, followed by sigmoid*mul.
+        // RMSNorm+gamma is one pinned fused operator, followed by sigmoid*mul (qwen4exp) or silu*mul (qwen35moe,
+        // ggml-cuda unary.cu op_silu: x / (1 + expf(-x))).
         const float weighted = __fmul_rn(__fmul_rn(scale, value), gamma[col]);
-        output[offset + col] = weighted * sigmoid(z[offset + col]);
+        const float zz = z[offset + col];
+        output[offset + col] = weighted * (silu ? zz / (1.0f + expf(-zz)) : sigmoid(zz));
     }
 }
 
@@ -184,7 +186,7 @@ void native_gdn_gate(const float* alpha, const float* dt, const float* ssm_a,
 }
 void native_gdn_out_norm(const float* output, const float* z, const float* gamma,
                          float* destination, int64_t heads, int64_t cols,
-                         float epsilon, void* stream) {
+                         float epsilon, GdnGate act, void* stream) {
     norm_geometry(heads, cols, epsilon, stream);
     const size_t bytes = size_t(heads) * S * sizeof(float);
     const Span writable{destination, bytes};
@@ -193,7 +195,8 @@ void native_gdn_out_norm(const float* output, const float* z, const float* gamma
         valid(input);
         disjoint(writable, input);
     }
-    out_norm<<<unsigned(heads), 256, 0, static_cast<cudaStream_t>(stream)>>>(output, z, gamma, destination, epsilon);
+    out_norm<<<unsigned(heads), 256, 0, static_cast<cudaStream_t>(stream)>>>(output, z, gamma, destination, epsilon,
+                                                                             act == GdnGate::Silu ? 1 : 0);
     check_launch();
 }
 } // namespace strata::kernels
