@@ -1,0 +1,41 @@
+{
+  "repo": "unsloth/Muse-Spark-Open-816B-A42B-GGUF",
+  "revision": "19d0b1b3a1b1974a48439e11e0639c0dad164fc8",
+  "quantization": "UD-IQ2_XXS",
+  "reference_repo": "https://github.com/ServeurpersoCom/llama.cpp.git",
+  "reference_revision": "335916ad3f0cab876a7a3cf16faaaaea28bf9a96",
+  "reference_pr": "https://github.com/ggml-org/llama.cpp/pull/30616",
+  "files": [
+    {
+      "path": "UD-IQ2_XXS/Muse-Spark-Open-816B-A42B-UD-IQ2_XXS-00001-of-00006.gguf",
+      "bytes": 13079896,
+      "sha256": "ae5088022bfeb5d38203e72e0bd84d160ad016c6d52a01ae5443775151d31ab3"
+    },
+    {
+      "path": "UD-IQ2_XXS/Muse-Spark-Open-816B-A42B-UD-IQ2_XXS-00002-of-00006.gguf",
+      "bytes": 49978142592,
+      "sha256": "c2a142d343174da9de1863c9cb0e0fac6822599a1386e22ee7f9918382eb2f4e"
+    },
+    {
+      "path": "UD-IQ2_XXS/Muse-Spark-Open-816B-A42B-UD-IQ2_XXS-00003-of-00006.gguf",
+      "bytes": 49982687168,
+      "sha256": "ed9aef6098f7a1a28ab7c06adbc9a7f828848297529e5c61bc144d10f4bc6b71"
+    },
+    {
+      "path": "UD-IQ2_XXS/Muse-Spark-Open-816B-A42B-UD-IQ2_XXS-00004-of-00006.gguf",
+      "bytes": 49416673632,
+      "sha256": "92dcd5cc651dc092b3e48a19ebdcbd3d6e5cba02cabf859e8c2e892fb6616e9c"
+    },
+    {
+      "path": "UD-IQ2_XXS/Muse-Spark-Open-816B-A42B-UD-IQ2_XXS-00005-of-00006.gguf",
+      "bytes": 49263704352,
+      "sha256": "a68a5629e50437c88da9a21b82313786aef712531bd3144799d055454614f6a7"
+    },
+    {
+      "path": "UD-IQ2_XXS/Muse-Spark-Open-816B-A42B-UD-IQ2_XXS-00006-of-00006.gguf",
+      "bytes": 26914281664,
+      "sha256": "d3de32896c0bafff1dd438389b5d488216d971cd31ebb811aa6d640857e7b42c"
+    }
+  ],
+  "total_bytes": 225568569304
+}

@@ -117,6 +117,19 @@ int main(int argc, char** argv) {
     std::printf("gguf_split_test\n");
     {
         TempDir d;
+        const auto path = d.path / "metadata-only.gguf";
+        fixture::write(path, {}, {});
+        // Empty v3 header is 24 bytes; no tensor data means no alignment padding is needed.
+        fs::resize_file(path, 24);
+        try {
+            strata::GgufFile f(path.string());
+            check(f.tensors().empty() && f.data_start() == f.file_size(), "unpadded metadata-only shard");
+        } catch (const std::exception& e) {
+            check(false, std::string("unpadded metadata-only shard: ") + e.what());
+        }
+    }
+    {
+        TempDir d;
         const auto paths = write_model(d.path, same);
         // any shard names the family; the list is in split order, metadata shard first
         std::vector<std::string> got;

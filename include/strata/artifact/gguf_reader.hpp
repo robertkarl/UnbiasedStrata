@@ -455,6 +455,9 @@ private:
             if (a->u) align = a->u;
         alignment_ = align;
         data_start_ = (c.pos() + align - 1) / align * align;
+        // Metadata-only split shards may end immediately after the header,
+        // without padding for a tensor payload that does not exist.
+        if (tensors_.empty()) data_start_ = std::min(data_start_, size_);
         if (data_start_ > size_) throw std::runtime_error("GGUF: data section starts past EOF");
     }
 

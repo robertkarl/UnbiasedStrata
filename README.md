@@ -6,6 +6,10 @@ Qwen3.6-35B-A3B (any single NVIDIA card from 6 to 32 GB, Pascal or newer) over a
 network is needed to build or run it: rsync the source, run `make build`, start the binary. No Python, no
 installer.
 
+An experimental native [Muse Spark Open path](docs/MUSE-SPARK.md) uses a separate
+build and pinned llama.cpp dependency. It targets Unsloth UD-IQ2_XXS; see that
+document for validation status, hardware requirements, and current limitations.
+
 ## Requirements
 
 | | Build | Run |
@@ -32,8 +36,8 @@ rsync -a UnbiasedStrata/ host:UnbiasedStrata/   # or: git clone, then git submod
 ssh host 'cd UnbiasedStrata && make build'      # produces build/unbiased-strata
 ```
 
-The tree is 6 MB plus the pinned llama.cpp submodule in `third_party/` (about 170 MB checked out). The
-build fetches nothing. `make build JOBS=N` sets the job count; `CUDA_ARCHS` defaults to
+The Qwen build uses the pinned `third_party/llama.cpp` submodule; Muse uses its
+separate dependency described above. Builds fetch nothing. `make build JOBS=N` sets the job count; `CUDA_ARCHS` defaults to
 `61;70;75;86;89;120`, one binary for every card from Pascal up, minus any architecture the installed
 `nvcc` cannot compile (12.4 has no 120, 13 has no 61 or 70; the build says what it dropped). `make build
 CUDA_ARCHS=61` builds for one card in about 3 minutes. An architecture below 75 in the list turns on

@@ -22,6 +22,16 @@ JOBS       ?= $(shell n=$$(nproc 2>/dev/null || echo 4); [ $$n -gt 16 ] && n=16;
 
 .PHONY: build clean
 
+# Muse is an isolated native engine build. Its newer tokenizer/reference dependency
+# does not replace the Qwen build's pinned llama.cpp.
+.PHONY: build-muse
+build-muse:
+	@test -f third_party/llama-muse/src/models/muse-spark.cpp || \
+	  { echo "run 'git submodule update --init third_party/llama-muse' first"; exit 1; }
+	cmake -S muse -B $(BUILD_DIR)-muse -DCMAKE_BUILD_TYPE=Release \
+	  "-DCMAKE_CUDA_ARCHITECTURES=$(CUDA_ARCHS)" $(CMAKE_EXTRA)
+	cmake --build $(BUILD_DIR)-muse -j $(JOBS) --target unbiased-strata muse-check muse-kernel-test muse-chat-test
+
 build:
 	@test -f third_party/llama.cpp/ggml/CMakeLists.txt || \
 	  { echo "third_party/llama.cpp is empty: run 'git submodule update --init' first"; exit 1; }

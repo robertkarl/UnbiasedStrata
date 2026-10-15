@@ -58,7 +58,11 @@ struct Options {
     int vision_tokens = 1024;
     std::string host = "127.0.0.1";
     int port = 8080;
+#ifdef STRATA_MUSE_NATIVE
+    long long ctx = 4096;
+#else
     long long ctx = 32768;
+#endif
     int threads = 0;                    // CPU expert workers; 0 = the engine's default (every physical core)
     long long vram_cap_mib = 0;         // --vram-cap: the engine limits itself to a smaller card's VRAM
     double ram_cap_gib = 0.0;           // --ram-cap: bounds the engine's RAM expert tier and pinned arena
@@ -66,6 +70,12 @@ struct Options {
 };
 
 void usage() {
+#ifdef STRATA_MUSE_NATIVE
+    std::fprintf(stderr,
+        "usage: unbiased-strata --model SHARD1.gguf [--ctx N] [--host ADDR] [--port N] [-- --cache-mib N]\n"
+        "Native Muse Spark Open text engine; all GGUF shards must be beside SHARD1.\n"
+        "Default context: 4096. No pack or MTP is required.\n");
+#else
     std::fprintf(stderr,
         "usage: unbiased-strata --model SHARD1.gguf --pack DIR --mtp DIR [options] [-- engine options]\n\n"
         "  --model PATH    the model's first GGUF shard (...-00001-of-00002.gguf); the second must be beside it\n"
@@ -83,6 +93,7 @@ void usage() {
         "Serves POST /v1/chat/completions (OpenAI style, with streaming), GET /v1/models and GET /health (with the\n"
         "engine's expert tiers and per-token counters: VRAM slots, RAM copies, mapped experts, hits, warm hints,\n"
         "major page faults).\n");
+#endif
 }
 
 bool file_exists(const std::string& p) {
@@ -161,7 +172,11 @@ struct StreamParse {
     std::vector<common_chat_msg_diff> step(const std::string& text, bool partial, const common_chat_parser_params& parser) {
         common_chat_msg now;
         try {
+#ifdef STRATA_MUSE_NATIVE
+            now = common_chat_parse(common_chat_input(text), partial, parser);
+#else
             now = common_chat_parse(text, partial, parser);
+#endif
         } catch (const std::exception&) {
             if (partial) return {};                             // not parseable yet: wait for more text
             now = common_chat_msg();
@@ -238,6 +253,19 @@ struct Server {
         in.use_jinja = true;
         in.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;   // reasoning goes to "reasoning_content"
         in.enable_thinking = true;
+#ifdef STRATA_MUSE_NATIVE
+        auto validate_effort = [](const common_json& effort) {
+            if (!effort.is_string() || (effort != "low" && effort != "medium" && effort != "high" && effort != "xhigh"))
+                throw std::runtime_error("Muse reasoning_effort must be low, medium, high, or xhigh");
+        };
+        if (body.contains("reasoning_effort")) validate_effort(body.at("reasoning_effort"));
+        if (body.contains("chat_template_kwargs") && body.at("chat_template_kwargs").is_object()) {
+            const auto& kw = body.at("chat_template_kwargs");
+            if (kw.contains("reasoning_effort")) validate_effort(kw.at("reasoning_effort"));
+            if (kw.contains("enable_thinking") && kw.at("enable_thinking") != true)
+                throw std::runtime_error("Muse does not support disabling reasoning");
+        }
+#endif
         // thinking: OpenAI's reasoning_effort, or the llama.cpp / vLLM convention chat_template_kwargs.enable_thinking
         if (body.contains("reasoning_effort") && body.at("reasoning_effort").is_string()) {
             const std::string effort = body.at("reasoning_effort").get<std::string>();
@@ -258,9 +286,21 @@ struct Server {
                 in.chat_template_kwargs["preserve_thinking"] = kw.at("preserve_thinking").dump();
         }
         const common_chat_params cp = common_chat_templates_apply(tmpls.get(), in);
-        std::string rendered = cp.prompt;
+#ifdef STRATA_MUSE_NATIVE
+        const std::string prompt_text = cp.prompt.str();
+#else
+        const std::string& prompt_text = cp.prompt;
+#endif
+        std::string rendered = prompt_text;
         if (images.empty()) {
+#ifdef STRATA_MUSE_NATIVE
+            for (const auto& part : cp.prompt.parts) {
+                const auto ids = common_tokenize(vocab, part.text, false, !part.is_input);
+                p.ids.insert(p.ids.end(), ids.begin(), ids.end());
+            }
+#else
             p.ids = common_tokenize(vocab, rendered, false, true);
+#endif
         } else {
             const auto pad = common_tokenize(vocab, "<|image_pad|>", false, true);
             const auto literal_pad = common_tokenize(vocab, "<|image_pad|>", false, false);
@@ -276,10 +316,10 @@ struct Server {
             };
             size_t offset = 0; rendered.clear();
             for (size_t i = 0; i < images.size(); ++i) {
-                auto at = cp.prompt.find(markers[i], offset);
-                if (at == std::string::npos || cp.prompt.find(markers[i], at+markers[i].size()) != std::string::npos)
+                auto at = prompt_text.find(markers[i], offset);
+                if (at == std::string::npos || prompt_text.find(markers[i], at+markers[i].size()) != std::string::npos)
                     throw std::invalid_argument("chat template did not preserve each image exactly once");
-                auto text = cp.prompt.substr(offset, at-offset);
+                auto text = prompt_text.substr(offset, at-offset);
                 text_ids(text); rendered += text + "<|vision_start|>";
                 p.ids.push_back(start[0]);
                 p.ids.insert(p.ids.end(), images[i]->tokens, pad[0]);
@@ -287,16 +327,20 @@ struct Server {
                 p.ids.push_back(end[0]); rendered += "<|vision_end|>";
                 offset = at + markers[i].size();
             }
-            auto tail = cp.prompt.substr(offset); text_ids(tail); rendered += tail;
+            auto tail = prompt_text.substr(offset); text_ids(tail); rendered += tail;
             p.images = std::make_shared<strata_frontend::ImageFile>();
             strata_frontend::write_images(*p.images, images);
         }
         if (p.ids.empty()) { err = "the prompt is empty"; return false; }
 
         p.parser = common_chat_parser_params(cp);
+#ifdef STRATA_MUSE_NATIVE
+        p.parser.parser = cp.parser;
+#else
         p.parser.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
         p.parser.parse_tool_calls = true;
         if (!cp.parser.empty()) p.parser.parser.load(cp.parser);
+#endif
 
         // The engine refuses a request unless prompt + max_new + 8 <= context (generate.cpp, the GEN handler), so
         // the slots it keeps back are not ours to promise.  Without this a client that asks for "as much as fits"
@@ -321,11 +365,22 @@ struct Server {
         // sampling: greedy unless the request sets a temperature above zero
         std::string keys;
         const double temperature = body.contains("temperature") && body.at("temperature").is_number()
-                                       ? body.at("temperature").get<double>() : 0.0;
+                                       ? body.at("temperature").get<double>() :
+#ifdef STRATA_MUSE_NATIVE
+                                         1.0;
+#else
+                                         0.0;
+#endif
         if (temperature > 0.0) {
+#ifdef STRATA_MUSE_NATIVE
+            const double top_p = body.contains("top_p") && body.at("top_p").is_number() ? body.at("top_p").get<double>() : 1.0;
+            long long top_k = body.contains("top_k") && body.at("top_k").is_number() ? body.at("top_k").get<long long>() : 0;
+            if (top_k < 0 || top_k > 202048) throw std::runtime_error("Muse top_k must be between 0 and 202048");
+#else
             const double top_p = body.contains("top_p") && body.at("top_p").is_number() ? body.at("top_p").get<double>() : 0.95;
             long long top_k = body.contains("top_k") && body.at("top_k").is_number() ? body.at("top_k").get<long long>() : 20;
             top_k = std::max(1LL, std::min(64LL, top_k));       // the engine's sampler takes 1..64
+#endif
             unsigned long long seed;
             if (body.contains("seed") && body.at("seed").is_number()) seed = (unsigned long long) body.at("seed").get<long long>();
             else seed = std::random_device{}();
@@ -642,7 +697,15 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "-h" || a == "--help") return false;
         else { std::fprintf(stderr, "unbiased-strata: unknown option %s\n\n", a.c_str()); return false; }
     }
+#ifdef STRATA_MUSE_NATIVE
+    if (!o.pack.empty() || !o.mtp.empty() || !o.mmproj.empty() || o.ram_cap_gib || o.vram_cap_mib) {
+        std::fprintf(stderr, "Muse: pack, MTP, images, ram-cap and vram-cap are not supported by this initial text path; use -- --cache-mib N\n");
+        return false;
+    }
+    return !o.model.empty();
+#else
     return !o.model.empty() && !o.pack.empty() && !o.mtp.empty();
+#endif
 }
 
 }  // namespace
@@ -665,7 +728,11 @@ int main(int argc, char** argv) {
     const std::string profile = o.pack + "/expert-profile.bin";
     // draft_vocab.bin is the draft head's vocabulary subset; a Qwen3.6 draft pack built with the full head
     // (tools/mtp_qwen36_pack.py --full-head) has none and the engine then drafts over the whole vocabulary
+#ifdef STRATA_MUSE_NATIVE
+    for (const std::string& f : {o.model})
+#else
     for (const std::string& f : {o.model, shard2, o.pack + "/index.txt", profile, o.mtp + "/experts.bin"})
+#endif
         if (!f.empty() && !file_exists(f)) { std::fprintf(stderr, "unbiased-strata: missing file: %s\n", f.c_str()); return 2; }
     if (o.ctx < 1024) { std::fprintf(stderr, "unbiased-strata: --ctx must be at least 1024\n"); return 2; }
 
@@ -689,6 +756,9 @@ int main(int argc, char** argv) {
                          o.threads);
     }
     if (o.threads > 0) { eargs.push_back("--pool-workers"); eargs.push_back(std::to_string(o.threads)); }
+#ifdef STRATA_MUSE_NATIVE
+    eargs = {"unbiased-strata", "--engine", "--native", o.model, "--max-context", std::to_string(o.ctx)};
+#endif
     for (const std::string& e : o.extra) eargs.push_back(e);
     std::signal(SIGPIPE, SIG_IGN);
     std::string err;

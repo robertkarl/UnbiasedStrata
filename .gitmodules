@@ -2,3 +2,7 @@
 	path = third_party/llama.cpp
 	url = https://github.com/ggml-org/llama.cpp.git
 	shallow = true
+[submodule "third_party/llama-muse"]
+	path = third_party/llama-muse
+	url = https://github.com/ServeurpersoCom/llama.cpp.git
+	shallow = true

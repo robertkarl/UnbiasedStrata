@@ -1,0 +1,189 @@
+{
+  "model_revision": "19d0b1b3a1b1974a48439e11e0639c0dad164fc8",
+  "reference_revision": "335916ad3f0cab876a7a3cf16faaaaea28bf9a96",
+  "status": "validated native text inference; short-context correctness milestone",
+  "synthetic_h200": {
+    "toy": {
+      "positions": 12,
+      "top1_agreement": 1.0,
+      "mean_kl": 6.131366489782288e-07,
+      "max_kl": 2.156497055990869e-06,
+      "max_abs_error": 0.009895913302898407,
+      "rms_error": 0.0011073975430585532,
+      "passed": true
+    },
+    "wide": {
+      "positions": 12,
+      "top1_agreement": 1.0,
+      "mean_kl": 3.3709654495730325e-06,
+      "max_kl": 6.369096329531773e-06,
+      "max_abs_error": 0.01646062731742859,
+      "rms_error": 0.0025963111423849277,
+      "passed": true
+    },
+    "mixed": {
+      "positions": 12,
+      "top1_agreement": 1.0,
+      "mean_kl": 4.772837006521513e-06,
+      "max_kl": 1.2108873841829442e-05,
+      "max_abs_error": 0.02323305606842041,
+      "rms_error": 0.0030881820387949665,
+      "passed": true
+    }
+  },
+  "cuda_operation_checks": {
+    "H200": "passed",
+    "RTX A6000": "passed",
+    "B200": "passed"
+  },
+  "chat_parser_checks": {
+    "H200": "passed",
+    "RTX A6000": "passed",
+    "B200": "passed"
+  },
+  "synthetic_http": [
+    "normal response",
+    "streaming response",
+    "invalid reasoning rejected",
+    "cancellation followed by engine reuse"
+  ],
+  "real_b200": {
+    "capital": {
+      "positions": 6,
+      "top1_agreement": 1.0,
+      "mean_kl": 0.000514702206426128,
+      "max_kl": 0.0014648765068026495,
+      "max_abs_error": 0.6651904582977295,
+      "rms_error": 0.07747545001943044,
+      "passed": true,
+      "os_block_inputs_512_bytes": 11812944
+    },
+    "arithmetic": {
+      "positions": 6,
+      "top1_agreement": 1.0,
+      "mean_kl": 0.0006132562441560015,
+      "max_kl": 0.0014055570442428375,
+      "max_abs_error": 0.6473207473754883,
+      "rms_error": 0.07931720918868544,
+      "passed": true
+    },
+    "code": {
+      "positions": 7,
+      "top1_agreement": 1.0,
+      "mean_kl": 0.00027577613345008544,
+      "max_kl": 0.0009038888516496378,
+      "max_abs_error": 0.4032101631164551,
+      "rms_error": 0.06543925301543849,
+      "passed": true
+    }
+  },
+  "weights_sha256": "all six shards verified on B200 local disk",
+  "real_h200": {
+    "capital": {
+      "positions": 6,
+      "top1_agreement": 1.0,
+      "mean_kl": 0.0006450209261946671,
+      "max_kl": 0.0017563129407407569,
+      "max_abs_error": 0.6205658316612244,
+      "rms_error": 0.07159348364667642,
+      "passed": true
+    },
+    "arithmetic": {
+      "positions": 6,
+      "top1_agreement": 1.0,
+      "mean_kl": 0.0005980471371201079,
+      "max_kl": 0.0010699382197757058,
+      "max_abs_error": 0.6762700080871582,
+      "rms_error": 0.08358008764582192,
+      "passed": true
+    },
+    "code": {
+      "positions": 7,
+      "top1_agreement": 1.0,
+      "mean_kl": 0.0005725456647328736,
+      "max_kl": 0.0031930407211163765,
+      "max_abs_error": 0.6469257175922394,
+      "rms_error": 0.07688643972952729,
+      "passed": true
+    }
+  },
+  "date": "2026-10-15",
+  "real_http_b200": {
+    "passed": true,
+    "context": 2048,
+    "native_gpus": 1,
+    "cases": {
+      "text_and_reasoning": {
+        "wall_seconds": 36.05201292899437,
+        "timings": {
+          "prompt_n": 157,
+          "prompt_ms": 32129.171,
+          "prompt_per_second": 4.886525083389174,
+          "predicted_n": 39,
+          "predicted_ms": 3912.508,
+          "predicted_per_second": 9.968030736294981,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        }
+      },
+      "streaming": {
+        "wall_seconds": 11.28314619208686,
+        "timings": {
+          "prompt_n": 157,
+          "prompt_ms": 8966.469,
+          "prompt_per_second": 17.509679674351187,
+          "predicted_n": 39,
+          "predicted_ms": 2308.608,
+          "predicted_per_second": 16.893296739853625,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        }
+      },
+      "tool_call": {
+        "wall_seconds": 58.573779748985544,
+        "timings": {
+          "prompt_n": 637,
+          "prompt_ms": 49663.866,
+          "prompt_per_second": 12.826226617154612,
+          "predicted_n": 108,
+          "predicted_ms": 8898.904,
+          "predicted_per_second": 12.136326001494115,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        }
+      },
+      "tool_result": {
+        "wall_seconds": 61.54736155399587,
+        "timings": {
+          "prompt_n": 774,
+          "prompt_ms": 58106.224,
+          "prompt_per_second": 13.32043190416228,
+          "predicted_n": 41,
+          "predicted_ms": 3413.573,
+          "predicted_per_second": 12.010875408259908,
+          "draft_n": 0,
+          "draft_n_accepted": 0
+        }
+      }
+    },
+    "peak_gpu_mib": 181618,
+    "peak_engine_rss_kib": 178788072,
+    "peak_container_bytes": 323845783552,
+    "observed_free_vram_mib_after_cache_filled": 1025
+  },
+  "negative_checks": [
+    "missing shard named in diagnostic",
+    "F32 expert matrices rejected before native GPU allocations"
+  ],
+  "cache_pressure": "long tool prompts reproduced allocation-rounding OOM; physical-headroom eviction fix passed complete rerun",
+  "h200_autoregressive_smoke": {
+    "prompt": "The capital of France is",
+    "generated_tokens": 16,
+    "processed_tokens": 22,
+    "forward_seconds": 7.854,
+    "max_rss_kib": 61275956,
+    "os_block_inputs_512_bytes": 0,
+    "result": "Paris; raw completion repeats the sentence",
+    "native_gpus": 1
+  }
+}
