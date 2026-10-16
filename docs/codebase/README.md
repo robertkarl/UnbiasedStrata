@@ -169,6 +169,9 @@ The engine reads the geometry from GGUF metadata. Its `general.architecture` key
   multi-GPU and models other than the two supported ones. `make build` does not build it and it is not tested
   ([build/README.md](build/README.md)). Comments often cite upstream docs that this fork does not carry, such as
   `docs/BATCHING.md`, `docs/semantics.md` and `ref/gdn.py`.
+- **The `native_*` kernels are the default paths.** They are upstream's line-for-line ports of llama.cpp's
+  kernels, not Qwen3.6-specific code. The front end always starts the engine with `--native <model>`, which
+  turns them all on ([kernels/cuda/README.md](kernels/cuda/README.md)).
 - **Tests are off by default.** `STRATA_BUILD_TESTS` is OFF because upstream's `tests/CMakeLists.txt` and
   `bench/micro/` were not imported. About 44 GPU test programs are still registered whenever CUDA is on. ctest
   in a `make build` tree therefore lists programs that were never built. See
