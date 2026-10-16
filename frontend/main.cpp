@@ -629,9 +629,9 @@ bool parse_args(int argc, char** argv, Options& o) {
         else if (a == "--") {
             for (++i; i < argc; ++i) {
                 const std::string e = argv[i];
-                // one GPU only: the engine's multi-GPU and remote-expert modes are not part of this fork
-                for (const char* no : {"--gpus", "--layer-split", "--split-device", "--peer-device", "--peer-slots",
-                                       "--remote-expert", "--vision", "--batch"})
+                // Multi-GPU and peer-expert engine modes, which the engine has always supported, are
+                // allowed by this front end too: the flags are simply passed through after `--`.
+                for (const char* no : {"--remote-expert", "--vision", "--batch"})
                     if (e.rfind(no, 0) == 0) {
                         std::fprintf(stderr, "unbiased-strata: %s is not supported here (use --mmproj for image input)\n", e.c_str());
                         std::exit(2);
