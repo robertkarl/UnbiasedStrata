@@ -8,7 +8,8 @@ A *pack* is the directory `--pack DIR` names. Python tools build it from the mod
 [tools/iq_pack.py](../../../../tools/iq_pack.py) for native packs (all Qwen3.6 packs and Flash-Next's IQ files), and
 `tools/strata_pack.py` plus [tools/pack_index.py](../../../../tools/pack_index.py) for the canonical Q2_0 pack. This
 page lists the files that matter to expert management, what reads each one, and which checks protect them. It also
-covers the tests in this area's scope that exercise packs and GGUF shards.
+covers the tests in this area's scope that exercise packs and GGUF shards. The full byte-level description of
+every pack file, from the side of the tools that write them, is [Tools › Pack format](../../tools/pack-format.md).
 
 ## Files
 

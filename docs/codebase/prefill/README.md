@@ -121,5 +121,5 @@ tokens[c0 .. c0+T)                                              (generate.cpp: P
 - [docs/QWEN36-35B-A3B.md](../../QWEN36-35B-A3B.md), section 3.6: the study's table of literal sites.
 - [docs/upstream/DETAILS.md](../../upstream/DETAILS.md): upstream's measurements ("Faster prompts (engine 0.1.13)", the 0.1.36 fused-kernel note).
 - [README.md](../../../README.md), the Qwen3.6 speed tables: prompt throughput by VRAM budget.
-- Other areas of these docs: `docs/codebase/core/` (session state, expert cache and source, layer layout),
-  `docs/codebase/kernels/` (QSA attention, KV formats, PLE), `docs/codebase/program/` (`generate.cpp`).
+- Other areas of these docs: [Core](../core/README.md) (session state, expert cache and source, layer layout),
+  [Kernels](../kernels/README.md) (QSA attention, KV formats, PLE), [Program](../program/README.md) (`generate.cpp`).

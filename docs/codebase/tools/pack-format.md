@@ -10,7 +10,8 @@ the **Qwen3.6 draft pack**, the **Flash-Next draft head** runtime directory, and
 `tools/mtp_rt.py`, `tools/make_profile.py`, `tools/strata_tokenizer.py`, `tools/pack_index.py`,
 `tools/strata_pack.py`) and was checked against the readers in the engine (`src/core/weights.cpp`,
 `src/kernels/cpu/expert_layout.cpp`, `src/core/expert_cache.cpp`, `src/core/mtp.cpp`). Where the two sides
-disagree, this page says so.
+disagree, this page says so. How the engine's expert code uses these files at run time is described in
+[Core › Experts › Pack format](../core/experts/pack-format.md).
 
 Files covered here (writers): [`tools/iq_pack.py`](../../../tools/iq_pack.py),
 [`tools/mtp_qwen36_pack.py`](../../../tools/mtp_qwen36_pack.py), [`tools/mtp_rt.py`](../../../tools/mtp_rt.py),

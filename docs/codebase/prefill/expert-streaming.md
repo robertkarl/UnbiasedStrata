@@ -145,4 +145,4 @@ group read from VRAM, routed or not in the fused walk).
 [pipeline.md](pipeline.md), [moe.md](moe.md), [docs/upstream/DETAILS.md](../../upstream/DETAILS.md) ("Faster prompts
 (engine 0.1.13)"), [README.md](../../../README.md) (Qwen3.6 speed tables). The expert cache, residency table and
 `ExpertSource` (`blob`, `pinned`, `transient`, `copy_blob` in `include/strata/core/expert_source.hpp:131-162`) are
-documented in the core area (`docs/codebase/core/`).
+documented in the core area ([Core › Experts](../core/experts/README.md)).

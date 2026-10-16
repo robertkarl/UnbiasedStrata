@@ -85,7 +85,7 @@ then sends `"Reply with the single word: ok"` with `temperature 0` and `reasonin
 return 200, `finish_reason: stop` and at least one completion token. A fifth, streamed request without
 `max_tokens` must contain no `"error"`, a `"finish_reason":"stop"` and end with `[DONE]` (the comment notes that a
 refusal would arrive as an error event after a 200). Exits 1 if any case fails. This guards the 8-slot reserve
-(REGINA-112; [http-api.md](http-api.md#max_tokens-and-the-8-slot-reserve)).
+(REGINA-112; [http-api.md](http-api.md#max_tokens-and-the-8-slot-reserve-maincpp301-318)).
 
 ## Not covered by tests
 

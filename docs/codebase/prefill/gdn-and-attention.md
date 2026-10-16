@@ -14,7 +14,7 @@ Files: [src/prefill/kernels.cu](../../../src/prefill/kernels.cu),
 [include/strata/prefill/kernels.hpp](../../../include/strata/prefill/kernels.hpp), the orchestration in
 [src/prefill/prefill.cpp](../../../src/prefill/prefill.cpp) (`:2212-2497`, `:3157-3183`). The attention kernels
 themselves (`qsa_prompt_attn_batch`, `qsa_decode_attn_batch`, the indexer, `kv_append_q4`, KV staging) live in
-`src/kernels/cuda/` and are documented with the kernels area (`docs/codebase/kernels/`).
+`src/kernels/cuda/` and are documented with the kernels area ([Kernels › CUDA](../kernels/cuda/README.md)).
 
 All buffers are row-major with the token as the slow index. Kernel launch errors exit the process (`check`,
 `kernels.cu:64`); the prompt path has no error return below `Prefill::run`.
