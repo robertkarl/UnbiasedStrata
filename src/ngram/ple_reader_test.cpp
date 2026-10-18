@@ -245,8 +245,6 @@ void bad_sizes_are_refused(const std::string& dir) {
 void all_formats_round_trip(const std::string& dir) {
     bf16_widening_is_exact();                      // BF16's own claim: a shift, exact for every pattern
     bad_sizes_are_refused(dir);
-    // UnbiasedStrata: upstream's prefetched_keys_are_reused(dir) is not here; it tests the gather_batch change of #2622,
-    // which this fork does not have.
     CHECK(k::ple_format_count() > 0, "no formats");
     for (int i = 0; i < k::ple_format_count(); ++i) {
         const k::PleFormatInfo& f = k::ple_formats()[i];
