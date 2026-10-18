@@ -287,7 +287,8 @@ bool PleTable::open(const std::string& gguf_path, std::string& err, const PleIoO
     const uint64_t need = impl_->n_rows * (uint64_t) impl_->rb;
     const uint64_t have = impl_->file->file_size() - impl_->file->data_start();
     const bool alone = impl_->file->tensors().size() == 1;
-    if (alone ? need != have : t->offset + need > have) {
+    if (t->offset > have || impl_->n_rows > (have - t->offset) / impl_->rb ||
+        (alone && (t->offset != 0 || need != have))) {
         char buf[256];
         std::snprintf(buf, sizeof buf,
                       "PLE table size mismatch: %llu rows x %d B = %llu at offset %llu, but the file holds %llu from "
