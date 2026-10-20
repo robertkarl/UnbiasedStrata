@@ -89,8 +89,25 @@ $abs = Join-Path $Root $BuildDir
 $common = @('-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DSTRATA_BUILD_TESTS=OFF', '-Wno-dev')
 $extra = if ($CmakeExtra) { $CmakeExtra -split ' ' | Where-Object { $_ } } else { @() }
 
+# A build folder copied or moved to another place keeps the old absolute paths in its CMake cache, and CMake refuses
+# to configure it there. Its cache (not its built programs, which run from anywhere) is dropped and made again.
+function Reset-MovedCache($dir) {
+    $cache = Join-Path $Root "$dir\CMakeCache.txt"
+    if (-not (Test-Path $cache)) { return }
+    $line = Select-String -Path $cache -Pattern '^CMAKE_CACHEFILE_DIR:INTERNAL=(.*)$' | Select-Object -First 1
+    if (-not $line) { return }
+    $was = $line.Matches[0].Groups[1].Value -replace '/', '\'
+    $now = (Join-Path $Root $dir) -replace '/', '\'
+    if ($was.TrimEnd('\') -ne $now.TrimEnd('\')) {
+        Write-Host "make.ps1: $dir was configured at $was; configuring it again here"
+        Remove-Item $cache -Force
+        Remove-Item (Join-Path $Root "$dir\CMakeFiles") -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Configure {
     if (-not (Test-Path 'third_party\llama.cpp\ggml\CMakeLists.txt')) { Fail "third_party/llama.cpp is empty: run 'git submodule update --init' first" }
+    Reset-MovedCache $BuildDir
     $have = @(& $Nvcc --list-gpu-arch 2>$null | ForEach-Object { $_ -replace 'compute_', '' })
     $want = $CudaArchs -split ';' | Where-Object { $_ }
     if ($have.Count) {
@@ -132,12 +149,14 @@ switch ($Target) {
         foreach ($f in @('strata.exe', 'strata-poly.exe', 'strata_kq.dll', 'unbiased-strata.exe')) { Write-Host "  $BuildDir\bin\$f" }
     }
     'frontend' {
+        Reset-MovedCache "$BuildDir-frontend"
         # The front end alone, without CUDA: for a laptop or a CI box. Needs only a C++20 compiler and CMake.
         Run cmake (@('-S', '.', '-B', "$BuildDir-frontend") + $common + @('-DSTRATA_ENABLE_CUDA=OFF',
             "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$($abs -replace '\\','/')-frontend/bin", '-DCMAKE_C_COMPILER=cl', '-DCMAKE_CXX_COMPILER=cl') + $extra)
         Run cmake @('--build', "$BuildDir-frontend", '-j', "$Jobs", '--target', 'unbiased-strata')
     }
     'test' {
+        Reset-MovedCache "$BuildDir-frontend"
         # The front end's tests, against a fake engine (frontend/tests/fake-engine.py), as `make test`.
         Run cmake (@('-S', '.', '-B', "$BuildDir-frontend") + $common + @('-DSTRATA_ENABLE_CUDA=OFF',
             "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$($abs -replace '\\','/')-frontend/bin", '-DCMAKE_C_COMPILER=cl', '-DCMAKE_CXX_COMPILER=cl') + $extra)
