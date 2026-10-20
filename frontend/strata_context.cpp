@@ -32,12 +32,62 @@
 #include <set>
 #include <chrono>
 #include <thread>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#include <process.h>
+#include <sys/stat.h>
+#include <cstdlib>
+#include <string>
+#else
 #include <unistd.h>
+#endif
 
 using strata_frontend::Engine;
 using strata_frontend::EngineLine;
 
 namespace {
+
+// A new file for one request's picture rows, opened for binary writing; `path` gets its name. mkstemp on Linux; on
+// Windows the same in %TEMP% (exclusive create, so two servers never share one).
+std::FILE * make_pictures_file(std::string & path) {
+#ifdef _WIN32
+    static std::atomic<unsigned> counter{0};
+    const char * tmp = std::getenv("TEMP");
+    std::string dir = tmp && *tmp ? tmp : ".";
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        const std::string name = dir + "\\unbiased-strata-pictures-" + std::to_string(_getpid()) + "-" +
+                                 std::to_string(counter.fetch_add(1)) + ".bin";
+        int fd = -1;
+        if (_sopen_s(&fd, name.c_str(), _O_CREAT | _O_EXCL | _O_WRONLY | _O_BINARY, _SH_DENYNO, _S_IREAD | _S_IWRITE) != 0) {
+            continue;
+        }
+        std::FILE * f = _fdopen(fd, "wb");
+        if (f == nullptr) {
+            _close(fd);
+            std::remove(name.c_str());
+            return nullptr;
+        }
+        path = name;
+        return f;
+    }
+    return nullptr;
+#else
+    char name[] = "/tmp/unbiased-strata-pictures-XXXXXX";
+    const int fd = ::mkstemp(name);
+    if (fd < 0) {
+        return nullptr;
+    }
+    std::FILE * f = ::fdopen(fd, "wb");
+    if (f == nullptr) {
+        ::close(fd);
+        ::unlink(name);
+        return nullptr;
+    }
+    path = name;
+    return f;
+#endif
+}
 
 // how long update_slots() waits for an engine line before returning to the queue (which then sees cancels)
 constexpr int ENGINE_POLL_MS = 20;
@@ -74,7 +124,7 @@ struct Slot {
 
     void release() {
         if (!images_path.empty()) {
-            ::unlink(images_path.c_str());
+            std::remove(images_path.c_str());
         }
         *this = Slot{};
     }
@@ -521,17 +571,9 @@ struct strata_context_impl {
 
     // the request's pictures file (slot.images_path, unlinked when the slot is released)
     std::FILE * open_pictures_file(std::string & err) {
-        char name[] = "/tmp/unbiased-strata-pictures-XXXXXX";
-        const int fd = ::mkstemp(name);
-        if (fd < 0) {
-            err = "cannot create the pictures file";
-            return nullptr;
-        }
-        slot.images_path = name;
-        std::FILE * f = ::fdopen(fd, "wb");
+        std::FILE * f = make_pictures_file(slot.images_path);
         if (f == nullptr) {
-            ::close(fd);
-            err = "cannot open the pictures file";
+            err = "cannot create the pictures file";
         }
         return f;
     }
