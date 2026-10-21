@@ -51,6 +51,13 @@ make build                           # build/bin/{strata,strata-poly,libstrata_k
 make test                            # the front end against a fake engine; no GPU, no model
 ```
 
+For AMD/HIP (tested on RX 6700 XT only), install ROCm with HIP/hipBLAS and select your GPU architecture:
+
+```sh
+make build BACKEND=hip HIP_ARCHS=gfx1031 ROCM_PATH=/opt/rocm BUILD_DIR=build-hip
+```
+`HIP_CXX` overrides the HIP compiler. CUDA remains the default; use separate build directories for each backend.
+
 ## Run
 
 ```
