@@ -5,7 +5,7 @@
 | What | Where | Version |
 | --- | --- | --- |
 | Engines (`strata`, `strata-poly`), tools, docs | https://github.com/VecSzn/PolyStrata | tag `v0.1.45-poly.1`, commit `d0cd84dc6bd009d1d9e2191e4e28cc76b80f1ee3` |
-| ggml, llama, common, mtmd, cpp-httplib | https://github.com/robertkarl/llama.cpp, branch `UnbiasedStrata`, as the submodule `third_party/llama.cpp` | commit `638a7e2fedf175e9d851bebe9cc30ff59dfdc685`: ggml-org `3cf03257f219afbe7334045ff7c6a06ac68c627d` (the commit upstream pins) plus the four parser commits below |
+| ggml, llama, common, mtmd, cpp-httplib | https://github.com/robertkarl/llama.cpp, branch `UnbiasedStrata`, as the submodule `third_party/llama.cpp` | commit `4174b21fb01ff3320d64f949c55ef12c7a4c661b`: ggml-org `3cf03257f219afbe7334045ff7c6a06ac68c627d` (the commit upstream pins) plus the five parser commits below |
 
 Commit `0197ae86` ("Import PolyStrata v0.1.45-poly.1 (d0cd84dc) unmodified") is the upstream tree, every tracked
 file, with the same tree hash as upstream's commit. `git diff 0197ae86 HEAD` is the whole story of this fork;
@@ -88,7 +88,7 @@ Recorded here because a client written for one of the two may notice.
 
 ## Changes to llama.cpp (robertkarl/llama.cpp, branch `UnbiasedStrata`)
 
-Four commits on top of ggml-org `3cf03257`; `git -C third_party/llama.cpp diff 3cf03257 HEAD` is exactly these.
+Five commits on top of ggml-org `3cf03257`; `git -C third_party/llama.cpp diff 3cf03257 HEAD` is exactly these.
 
 - `9547d8d` (`common/parsers/qwen3-coder.cpp`): the Qwen3-Coder
   tool-call grammar accepts a call's arguments in any order. Upstream takes the required ones first and the
@@ -112,6 +112,13 @@ Four commits on top of ggml-org `3cf03257`; `git -C third_party/llama.cpp diff 3
   `</parameter>` close tag. Qwen3.8 Flash-Next Coder IQ1_M, sampled without the grammar, wrote the tag twice before
   `</function>` in 7 of 673 requests of a BBW run (2026-10-20); each one failed the whole call and, through the diff
   check above, the request. The value still ends at the first close. Test in the Qwen3-Coder section of test-chat.
+- `4174b21` (`common/parsers/qwen3-coder.cpp`, `tools/server/server-task.cpp`, `tests/test-chat.cpp`): the same
+  shard also leaves a blank line between the last `</parameter>` and `</function>` (memcached-bisect-deep,
+  2026-10-21); the grammar now skips blank lines between arguments and before `</function>` and `</tool_call>`.
+  And the final, non-partial parse gets the same guard as the partial one: when it finds fewer tool calls than were
+  streamed, the streamed calls stand (arguments as last parsed) and the raw text is logged, instead of the diff
+  check throwing and the request ending in a 500 after the hold-delta guard had kept it alive. Two blank-line cases
+  in test-chat.
 ## Engine source (`src/`, `include/`)
 
 No changes: `git diff 0197ae86 HEAD -- src include` is empty (checked 2026-10-18). The engines measured in step 9 are
