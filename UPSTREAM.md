@@ -5,7 +5,7 @@
 | What | Where | Version |
 | --- | --- | --- |
 | Engines (`strata`, `strata-poly`), tools, docs | https://github.com/VecSzn/PolyStrata | tag `v0.1.45-poly.1`, commit `d0cd84dc6bd009d1d9e2191e4e28cc76b80f1ee3` |
-| ggml, llama, common, mtmd, cpp-httplib | https://github.com/robertkarl/llama.cpp, branch `UnbiasedStrata`, as the submodule `third_party/llama.cpp` | commit `a6de9af3b19b5e3a5397f2c835a29a13c37664bd`: ggml-org `3cf03257f219afbe7334045ff7c6a06ac68c627d` (the commit upstream pins) plus the two parser commits below |
+| ggml, llama, common, mtmd, cpp-httplib | https://github.com/robertkarl/llama.cpp, branch `UnbiasedStrata`, as the submodule `third_party/llama.cpp` | commit `638a7e2fedf175e9d851bebe9cc30ff59dfdc685`: ggml-org `3cf03257f219afbe7334045ff7c6a06ac68c627d` (the commit upstream pins) plus the four parser commits below |
 
 Commit `0197ae86` ("Import PolyStrata v0.1.45-poly.1 (d0cd84dc) unmodified") is the upstream tree, every tracked
 file, with the same tree hash as upstream's commit. `git diff 0197ae86 HEAD` is the whole story of this fork;
@@ -88,7 +88,7 @@ Recorded here because a client written for one of the two may notice.
 
 ## Changes to llama.cpp (robertkarl/llama.cpp, branch `UnbiasedStrata`)
 
-Two commits on top of ggml-org `3cf03257`; `git -C third_party/llama.cpp diff 3cf03257 HEAD` is exactly these.
+Four commits on top of ggml-org `3cf03257`; `git -C third_party/llama.cpp diff 3cf03257 HEAD` is exactly these.
 
 - `9547d8d` (`common/parsers/qwen3-coder.cpp`): the Qwen3-Coder
   tool-call grammar accepts a call's arguments in any order. Upstream takes the required ones first and the
@@ -104,6 +104,14 @@ Two commits on top of ggml-org `3cf03257`; `git -C third_party/llama.cpp diff 3c
   "output does not match the expected peg-native format" (PLAN.md step 13, 2026-10-19, USTRAT-7). Whether every
   required argument is present is left to the tool, as upstream already leaves it for optional-only tools.
 
+- `1421694` (`tools/server/server-task.cpp`): a partial re-parse that reports fewer tool calls than the previous
+  one no longer throws (the request died with a 500 mid-stream, "Invalid diff: now finding less tool calls!"); the
+  previous message is kept, nothing is emitted for that token, and the raw generated text is logged. A non-partial
+  parse failure returns the raw text as content instead of failing the request (issue #17, 2026-10-20).
+- `638a7e2` (`common/parsers/qwen3-coder.cpp`, `tests/test-chat.cpp`): the Qwen3-Coder grammar skips a stuttered
+  `</parameter>` close tag. Qwen3.8 Flash-Next Coder IQ1_M, sampled without the grammar, wrote the tag twice before
+  `</function>` in 7 of 673 requests of a BBW run (2026-10-20); each one failed the whole call and, through the diff
+  check above, the request. The value still ends at the first close. Test in the Qwen3-Coder section of test-chat.
 ## Engine source (`src/`, `include/`)
 
 No changes: `git diff 0197ae86 HEAD -- src include` is empty (checked 2026-10-18). The engines measured in step 9 are
