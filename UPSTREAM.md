@@ -5,7 +5,7 @@
 | What | Where | Version |
 | --- | --- | --- |
 | Engines (`strata`, `strata-poly`), tools, docs | https://github.com/VecSzn/PolyStrata | tag `v0.1.45-poly.1`, commit `d0cd84dc6bd009d1d9e2191e4e28cc76b80f1ee3` |
-| ggml, llama, common, mtmd, cpp-httplib | https://github.com/robertkarl/llama.cpp, branch `UnbiasedStrata`, as the submodule `third_party/llama.cpp` | commit `4174b21fb01ff3320d64f949c55ef12c7a4c661b`: ggml-org `3cf03257f219afbe7334045ff7c6a06ac68c627d` (the commit upstream pins) plus the five parser commits below |
+| ggml, llama, common, mtmd, cpp-httplib | https://github.com/robertkarl/llama.cpp, branch `UnbiasedStrata`, as the submodule `third_party/llama.cpp` | commit `385445fad49e42fa718b5e1f71668f35b7a08559`: ggml-org `3cf03257f219afbe7334045ff7c6a06ac68c627d` (the commit upstream pins) plus the six parser commits below |
 
 Commit `0197ae86` ("Import PolyStrata v0.1.45-poly.1 (d0cd84dc) unmodified") is the upstream tree, every tracked
 file, with the same tree hash as upstream's commit. `git diff 0197ae86 HEAD` is the whole story of this fork;
@@ -88,7 +88,7 @@ Recorded here because a client written for one of the two may notice.
 
 ## Changes to llama.cpp (robertkarl/llama.cpp, branch `UnbiasedStrata`)
 
-Five commits on top of ggml-org `3cf03257`; `git -C third_party/llama.cpp diff 3cf03257 HEAD` is exactly these.
+Six commits on top of ggml-org `3cf03257`; `git -C third_party/llama.cpp diff 3cf03257 HEAD` is exactly these.
 
 - `9547d8d` (`common/parsers/qwen3-coder.cpp`): the Qwen3-Coder
   tool-call grammar accepts a call's arguments in any order. Upstream takes the required ones first and the
@@ -119,6 +119,9 @@ Five commits on top of ggml-org `3cf03257`; `git -C third_party/llama.cpp diff 3
   streamed, the streamed calls stand (arguments as last parsed) and the raw text is logged, instead of the diff
   check throwing and the request ending in a 500 after the hold-delta guard had kept it alive. Two blank-line cases
   in test-chat.
+- `385445f` (`common/parsers/qwen3-coder.cpp`, `tests/test-chat.cpp`): the third shape (prime-frontend, 2026-10-21):
+  `</content>` and `</invoke>` after the real `</parameter>`, a blank line, `</parameter>` again. The stuttered-close
+  rule becomes general: any close tag that is not `</function>` or `</tool_call>` is skipped between arguments.
 ## Engine source (`src/`, `include/`)
 
 No changes: `git diff 0197ae86 HEAD -- src include` is empty (checked 2026-10-18). The engines measured in step 9 are
