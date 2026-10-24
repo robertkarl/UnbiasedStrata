@@ -1525,8 +1525,96 @@ void strata_context::init_routes(server_http_context & http) {
         return res;
     };
 
+    // Disk sessions: llama-server's slot 0 save/restore surface, forwarded to the engine's SAVE/RESTORE
+    // commands (both engines implement them). The directory comes from --slot-save-path (common_params).
+    auto get_slots = [I](const server_http_req &) {
+        auto res = I->create_response();
+        const long long n_prompt = I->slot.active() ? (long long) I->slot.task->n_tokens() : 0;
+        res->ok(json::array({ json{
+            {"id", 0},
+            {"id_task", -1},
+            {"n_ctx", I->n_ctx},
+            {"n_prompt_tokens", n_prompt},
+            {"is_processing", I->slot.active()},
+        } }));
+        return res;
+    };
+
+    auto post_slots = [I](const server_http_req & req) {
+        auto res = I->create_response();
+        const std::string action = req.get_param("action");
+        const std::string id     = req.get_param("id_slot");
+        if (id != "0") {
+            res->error(format_error_response("only slot 0 exists", ERROR_TYPE_NOT_FOUND));
+            return res;
+        }
+        if (action != "save" && action != "restore") {
+            res->error(format_error_response("action must be save or restore", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        if (I->params.slot_save_path.empty()) {
+            res->error(format_error_response("start the server with --slot-save-path DIR", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        if (I->slot.active()) {
+            res->error(format_error_response("the engine is busy; save or restore between requests", ERROR_TYPE_UNAVAILABLE));
+            return res;
+        }
+        json body = req.body.empty() ? json::object() : json::parse(req.body);
+        if (body.count("filename") == 0 || !body.at("filename").is_string()) {
+            res->error(format_error_response("filename is required", ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        const std::string filename = body.at("filename").get<std::string>();
+        bool bad = filename.empty() || filename.size() > 255 || filename == "." || filename == ".." ||
+                   filename.find_first_of("/\\:") != std::string::npos || filename.front() == '.' ||
+                   filename.back() == '.' || filename.back() == ' ';
+        for (unsigned char c : filename) {
+            if (c < 0x20 || c == 0x7f) bad = true;
+        }
+        if (bad) {
+            res->error(format_error_response("filename must be a plain file name inside --slot-save-path",
+                                             ERROR_TYPE_INVALID_REQUEST));
+            return res;
+        }
+        const bool save = action == "save";
+        const std::string path = I->params.slot_save_path + filename;
+        std::string reply, err;
+        if (!I->engine.command((save ? "SAVE " : "RESTORE ") + path, save ? "SAVED" : "RESTORED", reply, err, 600000)) {
+            enum error_type type = ERROR_TYPE_SERVER;
+            if (err.rfind("SERR invalid", 0) == 0) {
+                type = ERROR_TYPE_INVALID_REQUEST;
+            } else if (err.rfind("SERR memory", 0) == 0) {
+                type = ERROR_TYPE_UNAVAILABLE;
+            }
+            res->error(format_error_response(err, type));
+            return res;
+        }
+        long long tokens = 0, bytes = 0;
+        double ms = 0;
+        if (save) {
+            std::sscanf(reply.c_str(), "SAVED %lld %lld %lf", &tokens, &bytes, &ms);
+        } else {
+            std::sscanf(reply.c_str(), "RESTORED %lld %lld %lf", &tokens, &bytes, &ms);
+        }
+        json out = {{"id_slot", 0}, {"filename", filename}};
+        if (save) {
+            out["n_saved"]   = tokens;
+            out["n_written"] = bytes;
+            out["timings"]   = {{"save_ms", ms}};
+        } else {
+            out["n_restored"] = tokens;
+            out["n_read"]     = bytes;
+            out["timings"]    = {{"restore_ms", ms}};
+        }
+        res->ok(out);
+        return res;
+    };
+
     http.get ("/health",              ex_wrapper(get_health));
     http.get ("/v1/health",           ex_wrapper(get_health));
+    http.get ("/slots",               ex_wrapper(get_slots));
+    http.post("/slots/:id_slot",      ex_wrapper(post_slots));
     http.get ("/props",               ex_wrapper(get_props));
     http.get ("/models",              ex_wrapper(get_models));
     http.get ("/v1/models",           ex_wrapper(get_models));

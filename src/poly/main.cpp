@@ -334,6 +334,7 @@ struct Session {
     std::mt19937_64 rng{std::random_device{}()};
     const std::vector<int32_t>* follow = nullptr;   // --follow: the answer's tokens, taken in place of the picks
     const float* picked_from = nullptr;             // the logits of the last token picked
+    std::string identity;                           // the model a session file is bound to (the engine's --model)
     long long asked = 0, reused = 0;   // prompt tokens of every request, and those of them not read again
     // Guesses at the tokens to come, checked a window at a time (Engine::window).  They come from the block some
     // files carry for it (Engine::draft), and from the conversation: when the last tokens repeat an earlier stretch
@@ -724,6 +725,32 @@ int serve(Session& ss) {
             continue;
         }
         if (line.rfind("BYIELD", 0) == 0) continue;
+        // SAVE <path> | RESTORE <path>: the session-file surface, between requests.  The front end's
+        // /slots/0?action=save|restore sends these; a SAVE leaves the live conversation usable.
+        if (line.rfind("SAVE ", 0) == 0 || line.rfind("RESTORE ", 0) == 0) {
+            if (writing()) {
+                std::printf("SERR invalid 0 not while batch slots are writing\n");
+                std::fflush(stdout);
+                continue;
+            }
+            const bool save = line[0] == 'S';
+            const std::string path = line.substr(save ? 5 : 8);
+            const Clock::time_point t0 = Clock::now();
+            uint64_t tokens = 0, bytes = 0;
+            std::string err;
+            const bool ok = save ? ss.kept.save_session(path, ss.identity, tokens, bytes, err)
+                                 : ss.kept.restore_session(path, ss.identity, tokens, bytes, err);
+            if (!ok) {
+                std::string one = err.empty() ? "session file failed" : err;
+                for (char& c : one) if (c == '\n' || c == '\r') c = ' ';
+                std::printf("SERR invalid 0 %s\n", one.c_str());
+            } else {
+                std::printf("%s %llu %llu %.1f\n", save ? "SAVED" : "RESTORED",
+                            (unsigned long long) tokens, (unsigned long long) bytes, ms_since(t0));
+            }
+            std::fflush(stdout);
+            continue;
+        }
         lines.stop.store(false);   // a STOP that came between requests is stale
         // BGEN <slot> <max_new> ... reads the prompt and picks its first token as GEN 1 does, then the request goes
         // on in that slot (BADM <slot> 1), or ends there (BADM <slot> 0)
@@ -1075,6 +1102,7 @@ void usage() {
                  "  --conversation-cache-min-tokens N   a conversation shorter than this is not parked (default 1024)\n"
                  "  --conversation-cache-min-free-mib N park only while this much physical RAM stays free (default\n"
                  "                         2560)\n"
+                 "  --session-min-free-mib N  a session SAVE leaves this much free on its disk (default 4096)\n"
                  "  --batch N              N answers written together, each in a sequence of its own with its own\n"
                  "                         state and attention rows (default 0 = one at a time; at most 8);\n"
                  "                         --slots N is the same\n"
@@ -1169,6 +1197,7 @@ int main(int argc, char** argv) {
         else if (a == "--conversation-cache-slots") cache.o.park_slots = std::atoi(val());
         else if (a == "--conversation-cache-min-tokens") cache.o.park_min = std::atoll(val());
         else if (a == "--conversation-cache-min-free-mib") cache.min_free_mib = std::atoll(val());
+        else if (a == "--session-min-free-mib") cache.o.session_min_free_mib = std::atoll(val());
         else if (a == "--dump-layers") o.dump = true;
         else if (a == "--images") images = val();
         else if (a == "--image-pad") image_pad = std::atoi(val());
@@ -1247,6 +1276,7 @@ int main(int argc, char** argv) {
                 if (id >= 0 && std::find(eos.begin(), eos.end(), (int32_t) id) == eos.end()) eos.push_back((int32_t) id);
             }
         Session ss(engine, eos, cache, lookup);
+        ss.identity = o.model;
         int rc = 0;
         if (want_serve) {
             rc = serve(ss);
