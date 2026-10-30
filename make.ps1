@@ -5,7 +5,7 @@
 #
 #   git clone <repo>; cd <repo>
 #   git submodule update --init
-#   .\make.ps1 build                 # build\bin\{strata,strata-poly,unbiased-strata}.exe, strata_kq.dll
+#   .\make.ps1 build                 # build\bin\{strata,strata-poly,strata-dsv41,unbiased-strata}.exe, strata_kq.dll
 #   .\make.ps1 test                  # the front end against a fake engine; no GPU needed
 #   .\make.ps1 frontend              # the front end alone, without CUDA
 #   .\make.ps1 clean
@@ -28,7 +28,7 @@ param(
 $ErrorActionPreference = 'Continue'
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
-$Targets = @('strata', 'strata-poly', 'strata_kq', 'unbiased-strata')
+$Targets = @('strata', 'strata-poly', 'strata-dsv41', 'strata_kq', 'unbiased-strata')
 
 function Fail($msg) { Write-Host "make.ps1: $msg" -ForegroundColor Red; exit 1 }
 
@@ -118,7 +118,7 @@ function Configure {
     $archs = $want -join ';'
     $sm60 = @($want | Where-Object { [int](($_ -split '-')[0]) -lt 75 }).Count -gt 0
     $argv = @('-S', '.', '-B', $BuildDir) + $common + @(
-        '-DSTRATA_ENABLE_CUDA=ON', '-DSTRATA_NATIVE_EXPERTS=ON', '-DSTRATA_MMQ_KQUANTS=ON', '-DSTRATA_Q6K_EXPERTS=ON',
+        '-DSTRATA_ENABLE_CUDA=ON', '-DSTRATA_NATIVE_EXPERTS=ON', '-DSTRATA_MMQ_KQUANTS=ON', '-DSTRATA_Q6K_EXPERTS=ON', '-DSTRATA_BUILD_DSV41=ON',
         "-DCMAKE_CUDA_ARCHITECTURES=$archs", "-DCMAKE_CUDA_COMPILER=$($Nvcc -replace '\\','/')",
         # CMakeLists.txt #585: MSVC with a CUDA 12.x toolkit links every cudart symbol twice (LNK1169) with the default
         # static runtime beside CUDA::cudart; the shared runtime alone links
@@ -146,7 +146,7 @@ switch ($Target) {
         Run cmake (@('--build', $BuildDir, '-j', "$Jobs", '--target') + $Targets)
         Copy-CudaDlls
         Write-Host 'built:'
-        foreach ($f in @('strata.exe', 'strata-poly.exe', 'strata_kq.dll', 'unbiased-strata.exe')) { Write-Host "  $BuildDir\bin\$f" }
+        foreach ($f in @('strata.exe', 'strata-poly.exe', 'strata-dsv41.exe', 'strata_kq.dll', 'unbiased-strata.exe')) { Write-Host "  $BuildDir\bin\$f" }
     }
     'frontend' {
         Reset-MovedCache "$BuildDir-frontend"
@@ -160,8 +160,10 @@ switch ($Target) {
         # The front end's tests, against a fake engine (frontend/tests/fake-engine.py), as `make test`.
         Run cmake (@('-S', '.', '-B', "$BuildDir-frontend") + $common + @('-DSTRATA_ENABLE_CUDA=OFF',
             "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$($abs -replace '\\','/')-frontend/bin", '-DCMAKE_C_COMPILER=cl', '-DCMAKE_CXX_COMPILER=cl') + $extra)
-        Run cmake @('--build', "$BuildDir-frontend", '-j', "$Jobs", '--target', 'unbiased-strata', 'engine_test')
+        Run cmake @('--build', "$BuildDir-frontend", '-j', "$Jobs", '--target', 'unbiased-strata', 'engine_test', 'literals_test', 'picture_cache_test')
         Run "$abs-frontend\bin\engine_test.exe" @('frontend\tests\fake-engine.py')
+        Run "$abs-frontend\bin\literals_test.exe" @()
+        Run "$abs-frontend\bin\picture_cache_test.exe" @()
         $bash = @("$env:ProgramFiles\Git\bin\bash.exe", "$env:ProgramFiles\Git\usr\bin\bash.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
         if (-not $bash) { Fail 'frontend/tests/e2e.sh needs bash: install Git for Windows' }
         Run $bash @('frontend/tests/e2e.sh', "$BuildDir-frontend/bin/unbiased-strata.exe")

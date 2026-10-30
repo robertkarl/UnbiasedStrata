@@ -94,7 +94,7 @@ The same steps in PowerShell, with Visual Studio 2022 or newer (C++ workload; it
 
 ```
 git submodule update --init
-.\make.ps1 build                    # build\bin\{strata,strata-poly,unbiased-strata}.exe, strata_kq.dll, the CUDA DLLs
+.\make.ps1 build                    # build\bin\{strata,strata-poly,strata-dsv41,unbiased-strata}.exe, strata_kq.dll, the CUDA DLLs
 .\make.ps1 test                     # the front end against the fake engine, as make test
 .\make.ps1 build -CudaArchs 89      # one card's arch, several times faster (the Makefile's CUDA_ARCHS)
 ```
