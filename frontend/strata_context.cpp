@@ -8,6 +8,7 @@
 #include "literals.hpp"
 #include "picture_cache.hpp"
 
+#include "server-chat.h"
 #include "server-common.h"
 #include "server-task.h"
 #include "server-queue.h"
@@ -1460,6 +1461,14 @@ void strata_context::init_routes(server_http_context & http) {
         return I->handle_completions(req, body_parsed, files, TASK_RESPONSE_TYPE_OAI_CHAT, plain);
     };
 
+    auto post_responses_oai = [I, parse_chat](const server_http_req & req) {
+        std::vector<raw_buffer> files;
+        std::vector<std::pair<size_t, size_t>> plain;
+        json body = server_chat_convert_responses_to_chatcmpl(json::parse(req.body));
+        json body_parsed = parse_chat(body, files, plain);
+        return I->handle_completions(req, body_parsed, files, TASK_RESPONSE_TYPE_OAI_RESP, plain);
+    };
+
     auto post_completions_oai = [I](const server_http_req & req) {
         std::vector<raw_buffer> files;
         const json body = json::parse(req.body);
@@ -1535,6 +1544,8 @@ void strata_context::init_routes(server_http_context & http) {
     http.post("/v1/completions",      ex_wrapper(post_completions_oai));
     http.post("/chat/completions",    ex_wrapper(post_chat_completions));
     http.post("/v1/chat/completions", ex_wrapper(post_chat_completions));
+    http.post("/responses",           ex_wrapper(post_responses_oai));
+    http.post("/v1/responses",        ex_wrapper(post_responses_oai));
     http.post("/tokenize",            ex_wrapper(post_tokenize));
     http.post("/detokenize",          ex_wrapper(post_detokenize));
     http.post("/apply-template",      ex_wrapper(post_apply_template));

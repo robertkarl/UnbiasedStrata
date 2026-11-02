@@ -56,6 +56,14 @@ check $([ "$finish" = stop ] && echo 0 || echo 1) "stream finish_reason stop"
 last=$(echo "$s" | grep '^data: {' | tail -1 | sed 's/^data: //')
 check $([ "$(echo "$last" | j 'd["usage"]["completion_tokens"]')" = 4 ] && [ "$(echo "$last" | j 'len(d["choices"])')" = 0 ] && echo 0 || echo 1) "stream last chunk: usage.completion_tokens 4, empty choices"
 
+# OpenAI Responses API (Codex uses it): plain and streamed
+r=$(curl -s "$URL/v1/responses" -H 'content-type: application/json' -d '{"model":"fake","input":"Say hello","max_output_tokens":32}')
+check $([ "$(echo "$r" | j '[c["text"] for o in d["output"] if o["type"] == "message" for c in o["content"]][0]')" = "Hello, world!" ] && echo 0 || echo 1) "responses output text: $(echo "$r" | j '{"status": d.get("status"), "usage": d.get("usage")}')"
+s=$(curl -s -N "$URL/v1/responses" -H 'content-type: application/json' -d '{"model":"fake","stream":true,"input":"Say hello","max_output_tokens":32}')
+joined=$(echo "$s" | grep '^data: {' | sed 's/^data: //' | python3 -c 'import json,sys; print("".join(e.get("delta", "") for e in map(json.loads, sys.stdin) if e.get("type") == "response.output_text.delta"), end="")')
+check $([ "$joined" = "Hello, world!" ] && echo 0 || echo 1) "responses stream deltas join to the content"
+check $(echo "$s" | grep -q 'response.completed' && echo 0 || echo 1) "responses stream ends with response.completed"
+
 # a client that disconnects mid-stream: the engine is told to stop and the next request is clean. The fake engine
 # reads its env once at start, so this needs a second server whose engine streams a long reply slowly (token 9707,
 # "Hello": a raw byte token would not survive the chat parser on the follow-up request).
