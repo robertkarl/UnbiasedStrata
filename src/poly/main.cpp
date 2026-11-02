@@ -1063,6 +1063,11 @@ void usage() {
                  "                         of them are copied after the layer has routed\n"
                  "  --stage-ahead N        from N tokens, a batch copies those experts before it routes (default 1024,\n"
                  "                         0 = never)\n"
+                 "  --stage-rows N         from N tokens a call copies the experts outside the cache to the card\n"
+                 "                         (--stage-mib) and computes them there, the CPU taking its share meanwhile;\n"
+                 "                         under N the CPU computes all of them (default 32; 1 = also while an\n"
+                 "                         answer is written, which keeps the card and the bus busy instead of the CPU)\n"
+                 "  --stage-overlap 0|1    copy a single staging round under the cached experts' kernels (1)\n"
                  "  --cpu-share F          under that, the share of those experts the CPU computes meanwhile, the\n"
                  "                         ones the fewest tokens chose (default: as the times say; 0 = none)\n"
                  "  --prompt-cache N       checkpoints kept of a conversation, about 150 MB of RAM each (default 6;\n"
@@ -1162,6 +1167,8 @@ int main(int argc, char** argv) {
         else if (a == "--prompt-batch") o.prompt_batch = std::atoi(val());
         else if (a == "--stage-mib") o.stage_mib = std::atoi(val());
         else if (a == "--stage-ahead") o.stage_ahead = std::atoi(val());
+        else if (a == "--stage-rows") o.stage_rows = std::atoi(val());
+        else if (a == "--stage-overlap") o.stage_overlap = std::atoi(val()) != 0;
         else if (a == "--cpu-share") o.cpu_share = (float) std::atof(val());
         else if (a == "--prompt-cache") cache.o.checkpoints = std::atoi(val());
         else if (a == "--prompt-cache-every") cache.o.every = std::atoll(val());

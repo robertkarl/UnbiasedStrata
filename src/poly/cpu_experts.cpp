@@ -4,6 +4,7 @@
 #include "ggml.h"
 #include "ggml-cpu.h"
 
+#include <cstdlib>
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -18,7 +19,12 @@ namespace {
 // idle at the end of every layer: 64 rows gave Tiel's 512-row experts 8 tasks each, and its down products 32 tasks.
 constexpr int kRowsPerTask = 32;
 constexpr int kRowsPerDownTask = 16;
-constexpr int kSpinsBeforeSleep = 20000;   // about a millisecond of pause instructions
+// About a millisecond of pause instructions before a worker sleeps; STRATA_WORKER_SPINS=N for another count (a
+// laptop whose CPU is not the lane that matters cools down with a few hundred).
+const int kSpinsBeforeSleep = [] {
+    const char* v = std::getenv("STRATA_WORKER_SPINS");
+    return v && std::atoi(v) >= 0 ? std::atoi(v) : 20000;
+}();
 
 const ggml_type_traits_cpu* traits(int type) { return ggml_get_type_traits_cpu((ggml_type) type); }
 

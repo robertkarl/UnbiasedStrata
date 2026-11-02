@@ -61,6 +61,11 @@ struct Options {
     float cpu_share = -1;         ///< of the experts outside VRAM that such a call routes to, the share the CPU
                                   ///< computes while the others are copied: the ones the fewest tokens chose;
                                   ///< below 0: as the two took the time between them; 0: none
+    int stage_rows = 32;          ///< from this many tokens (kStageRows) a call takes its routed experts as a prompt batch
+                                  ///< (moe_rows(): the cached ones by MMQ, the others through the staging buffer
+                                  ///< with the CPU's share computed meanwhile); under it the CPU computes every
+                                  ///< expert outside VRAM (moe()).  1: an answer's windows stream their misses too
+    bool stage_overlap = true;    ///< a single staging round is copied on the upload stream, under the cached experts' kernels
     int expert_swaps = 64;        ///< experts on their way into the cache at a time while an answer is written, each
                                   ///< to the slot of one the answer uses less; 0: the cache stays as it was loaded
     bool stay_near = true;        ///< with several NUMA nodes, keep the CPU threads on the one that holds the experts

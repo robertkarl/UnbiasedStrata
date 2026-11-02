@@ -1011,6 +1011,16 @@ std::unique_ptr<Engine> Engine::open(const Options& o) {
         starts = layer_starts(o.layer_split, file, (int) blocks->u - (nextn ? (int) nextn->u : 0), cards);
         ck(cudaSetDevice(was), "cudaSetDevice");
     }
+    // STRATA_BLOCKING_SYNC=1: the thread that waits for the card sleeps on it instead of spinning (a laptop whose
+    // CPU shares the card's heat); a wake costs some microseconds a wait.
+    if (const char* v = std::getenv("STRATA_BLOCKING_SYNC"); v && std::atoi(v) != 0)
+        for (int d = 0; d < std::max(1, devices); ++d) {
+            ck(cudaSetDevice(d), "cudaSetDevice");
+            if (cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync) != cudaSuccess) {
+                cudaGetLastError();
+                std::fprintf(stderr, "strata-poly: card %d: could not set blocking sync\n", d);
+            }
+        }
     if (starts.empty()) {
         std::unique_ptr<Engine> engine = make();
         engine->load(o);
@@ -1587,6 +1597,8 @@ void Engine::load(const Options& o) {
         throw std::runtime_error("a prompt batch is 1 to 4096 tokens");
     if (opt_.stage_mib < 1) throw std::runtime_error("the staging buffer must be at least 1 MiB");
     if (opt_.stage_ahead < 0) throw std::runtime_error("the batch size to stage ahead from cannot be negative");
+    if (opt_.stage_rows < 1 || opt_.stage_rows > kStageRows)
+        throw std::runtime_error("--stage-rows takes 1 to " + std::to_string(kStageRows));
     if (opt_.expert_swaps < 0 || opt_.expert_swaps > 64)
         throw std::runtime_error("0 to 64 experts can be on their way into the cache at a time");
     if (opt_.window < 0 || opt_.window > 8)
@@ -2105,7 +2117,7 @@ void Engine::lin(const Dev& w, const float* x, float* y, int n, const void* xq, 
 
 void Engine::router_scores(const Layer& L, int n) { lin(L.gate_inp, xn_, rl_, n, xq_); }
 
-bool Engine::batched(const Layer& L, int n) const { return mmq_ && L.mmq && n >= kStageRows; }
+bool Engine::batched(const Layer& L, int n) const { return mmq_ && L.mmq && n >= opt_.stage_rows; }
 
 // The router's scores, and the copies of them and of the experts' input to the host.
 void Engine::moe_router(const Layer& L, int n) {
@@ -2406,9 +2418,12 @@ void Engine::moe_rows(Layer& L, int il, int n) {
                   w + (size_t) t * n_used_, tmp);
     });
     count_.assign((size_t) n_expert_, 0);
+    const bool answer = n < kStageRows;   // an answer's window through this path (--stage-rows), not a prompt batch
     for (int i = 0; i < rr; ++i) {
         ++count_[(size_t) ids_[(size_t) i]];
         ++use_[(size_t) il * n_expert_ + (size_t) ids_[(size_t) i]];
+        // what moe() counts for follow(): the cache keeps trading for the experts the answer uses
+        if (answer && n_swap_ > 0) recent_[(size_t) il * n_expert_ + (size_t) ids_[(size_t) i]] += 1.f;
     }
     // The CPU computes some of the routed experts outside VRAM while the others are copied: the ones the fewest
     // tokens chose, whose copy costs as much as any other's and which cost the CPU about as much as their tokens.
@@ -2496,8 +2511,12 @@ void Engine::moe_rows(Layer& L, int il, int n) {
        "expert rows");
 
     const int rc = bounds[n_cached];   // the rows of the cached experts
-    stats_.batch_cached += rc;
-    stats_.batch_staged += rg - rc;
+    if (answer) {
+        stats_.gpu_experts += rc;   // an answer's window: counted as decoding
+    } else {
+        stats_.batch_cached += rc;
+        stats_.batch_staged += rg - rc;
+    }
 
     const float limit = clamp_exp_[(size_t) il];
     const int gt = (int) L.gu_type, dt = (int) L.d_type;
@@ -2556,7 +2575,19 @@ void Engine::moe_rows(Layer& L, int il, int n) {
             } else if (r == 0 && early) {
                 ck(cudaStreamWaitEvent(cs(st_), (cudaEvent_t) ev_ahead_, 0), "expert staging");
             } else if (rows > 0) {
-                stage(L, group_.data() + g0, m, st_, n_cpu > 0);
+                // an answer's window: the four stagers copy, so the expert workers sleep instead of spinning
+                if (answer && !stagers_) stagers_ = std::make_unique<Workers>(4);
+                if (n_round == 1 && opt_.stage_overlap) {
+                    // One round: its copy goes on the upload stream, under the cached experts' kernels queued
+                    // above, and the compute stream takes it up when it lands.  More rounds reuse the buffer, so
+                    // a round's copy has to follow the round before it on the compute stream.
+                    ck(cudaStreamWaitEvent(cs(up_), (cudaEvent_t) ev_free_, 0), "expert staging");
+                    stage(L, group_.data() + g0, m, up_, n_cpu > 0 || answer);
+                    ck(cudaEventRecord((cudaEvent_t) ev_ahead_, cs(up_)), "expert staging");
+                    ck(cudaStreamWaitEvent(cs(st_), (cudaEvent_t) ev_ahead_, 0), "expert staging");
+                } else {
+                    stage(L, group_.data() + g0, m, st_, n_cpu > 0 || answer);
+                }
                 holds = r;
             }
             if (rows == 0) continue;   // nothing routed to the experts that go ahead
@@ -2732,7 +2763,11 @@ void Engine::run(const int32_t* tokens, int n) {
     //
     // A half's launches are the ones its tokens have in a call of their own, at their rows of the buffers
     // (shift_rows()), so each token comes out as it would alone.
-    if (n > 1 && windowed_ && !all_cached() && halves_) {
+    // With --stage-rows under kStageRows a window's experts take the batch path (moe_rows(), below), whose call
+    // does the shared expert and the routing itself: up() leaves them out, and moe() would then miss them, so
+    // the halves (which call moe() directly) are not for such a window.
+    const bool streamed = mmq_ && n >= opt_.stage_rows && opt_.stage_rows < kStageRows;
+    if (n > 1 && windowed_ && !all_cached() && halves_ && !streamed) {
         const int first[3] = {0, (n + 1) / 2, n};   // half k is the tokens [first[k], first[k + 1])
         const unsigned bits = snap_bits_;           // the window's tokens that leave the recurrent state
         int at = 0;
