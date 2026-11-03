@@ -1857,6 +1857,16 @@ void Engine::alloc() {
         L.mmq = opt_.gpu_experts && rows_ >= opt_.stage_rows && Mmq::fits((int) L.gu_type, 2 * n_ff_exp_, n_embd_) &&
                 Mmq::fits((int) L.d_type, n_embd_, n_ff_exp_);
         tiles = tiles || L.mmq;
+        // the pointer-table kernels have no tile for rows that are not a multiple of 128 (Mmq::mul_tab)
+        L.tab = L.mmq && opt_.mmq_tab && Mmq::tab((int) L.gu_type) && Mmq::tab((int) L.d_type) &&
+                (2 * n_ff_exp_) % 128 == 0 && n_embd_ % 128 == 0;
+        if (L.mmq && opt_.mmq_tab && !L.tab && !tab_warned_) {
+            tab_warned_ = true;
+            std::fprintf(stderr, "strata-poly: layer %d's cached experts go one launch per run of slots: %s\n", il,
+                         Mmq::tab((int) L.gu_type) && Mmq::tab((int) L.d_type)
+                             ? "the expert width is not a multiple of 128"
+                             : "this build has no pointer-table MMQ for their types (STRATA_POLY_MMQ_TAB)");
+        }
         one_expert = std::max(one_expert, 2 * L.gu_bytes + L.d_bytes);
     }
     if (tiles) mmq_ = std::make_unique<Mmq>();
@@ -2559,6 +2569,11 @@ void Engine::moe_rows(Layer& L, int il, int n) {
         // a staging round are; a launch for each class that has rows among them.  The cache is filled a layer's
         // experts side by side, so that is the whole layer until experts trade slots (follow()).  A launch for each
         // expert was a sixth of a long prompt's time in a model with 256 experts a layer.
+        //
+        // Once follow() has traded slots away, a layer's cached experts lie in many short runs, and a window's few
+        // experts with rows would go one launch each.  The pointer-table kernel (Mmq::mul_tab) takes up to kTab of
+        // them wherever their slots lie: a class goes by the table when that is fewer launches than its runs.  The
+        // table's launch runs over exactly the class's experts with rows, which group_ has class after class.
         auto slot_of = [&](int j) { return L.slot[(size_t) chan_[(size_t) j]]; };
         runs_.clear();
         for (int j = 0; j < n_chan;) {
@@ -2572,17 +2587,52 @@ void Engine::moe_rows(Layer& L, int il, int n) {
                 if (most[c] > 0) runs_.push_back({c, j, m, most[c]});
             j += m;
         }
-        for (const Run& r : runs_)
-            mmq_->mul(slot_of(r.j), gt, ff2, n_embd_, L.slot_bytes, r.m, mq_, d_cb + (size_t) r.c * cb_row + r.j, iota_,
-                      rg, r.most, gu_, ff2, st_);
+        int n_run[kClasses] = {}, c0[kClasses + 1] = {};   // a class's runs; where its experts start in group_
+        for (const Run& r : runs_) ++n_run[r.c];
+        for (int c = 0, g = 0; c < kClasses; ++c) {
+            c0[c] = g;
+            while (g < n_cached && tile_class(rows_of(g)) == c) ++g;
+        }
+        c0[kClasses] = n_cached;
+        bool by_tab[kClasses];
+        for (int c = 0; c < kClasses; ++c)
+            by_tab[c] = L.tab && c0[c + 1] > c0[c] && (c0[c + 1] - c0[c] + Mmq::kTab - 1) / Mmq::kTab < n_run[c];
+        const auto cached = [&](bool down) {
+            for (const Run& r : runs_) {
+                if (by_tab[r.c]) continue;
+                const int32_t* b = d_cb + (size_t) r.c * cb_row + r.j;
+                if (down)
+                    mmq_->mul(slot_of(r.j) + gu2, dt, n_embd_, ff, L.slot_bytes, r.m, mq2_, b, d_place, rc, r.most, dx_,
+                              n_embd_, st_);
+                else
+                    mmq_->mul(slot_of(r.j), gt, ff2, n_embd_, L.slot_bytes, r.m, mq_, b, iota_, rg, r.most, gu_, ff2, st_);
+            }
+            for (int c = 0; c < kClasses; ++c) {
+                if (!by_tab[c]) continue;
+                for (int g0 = c0[c]; g0 < c0[c + 1]; g0 += Mmq::kTab) {
+                    const int m = std::min(Mmq::kTab, c0[c + 1] - g0);
+                    const void* tab[Mmq::kTab];
+                    int most = 0;
+                    for (int k = 0; k < m; ++k) {
+                        tab[k] = L.slot[(size_t) group_[(size_t) (g0 + k)]] + (down ? gu2 : 0);
+                        most = std::max(most, rows_of(g0 + k));
+                    }
+                    const bool launched =
+                        down ? mmq_->mul_tab(tab, dt, n_embd_, ff, m, mq2_, d_bounds + g0, d_place, rc, most, dx_,
+                                             n_embd_, st_)
+                             : mmq_->mul_tab(tab, gt, ff2, n_embd_, m, mq_, d_bounds + g0, iota_, rg, most, gu_, ff2,
+                                             st_);
+                    if (!launched) throw std::runtime_error("mmq: no pointer-table launch for the cached experts");
+                }
+            }
+        };
+        cached(false);
         if (rc > 0) {
             if (gelu_) geglu_rows(gu_, hx_, n_ff_exp_, rc, st_);
             else swiglu_clamp_rows(gu_, hx_, n_ff_exp_, rc, limit, st_);
             Mmq::quantize(hx_, nullptr, mq2_, dt, ff, ff, rc, st_);
         }
-        for (const Run& r : runs_)
-            mmq_->mul(slot_of(r.j) + gu2, dt, n_embd_, ff, L.slot_bytes, r.m, mq2_, d_cb + (size_t) r.c * cb_row + r.j,
-                      d_place, rc, r.most, dx_, n_embd_, st_);
+        cached(true);
 
         // The round the buffer holds goes first and is not copied.  If it holds none of this call's, the experts
         // that go ahead are copied last, so the next call finds them.  The order does not change a round's launches.

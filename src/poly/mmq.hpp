@@ -37,6 +37,16 @@ public:
              const int32_t* bounds, const int32_t* ids, int64_t total_rows, int64_t max_rows, float* dst,
              int64_t ld_dst, void* stream);
 
+    /// Up to this many matrices in one mul_tab() launch.
+    static constexpr int kTab = 16;
+    /// This build has the pointer-table kernels (STRATA_POLY_MMQ_TAB) for ggml_type.
+    static bool tab(int ggml_type);
+    /// mul() over n matrices that lie where w[0..n) say instead of `stride` apart (n <= kTab).  false, and nothing
+    /// launched, when this build has no pointer-table kernel for the type or w_rows is not a multiple of 128.
+    bool mul_tab(const void* const* w, int ggml_type, int64_t w_rows, int64_t w_cols, int n, const void* xq,
+                 const int32_t* bounds, const int32_t* ids, int64_t total_rows, int64_t max_rows, float* dst,
+                 int64_t ld_dst, void* stream);
+
 private:
     void* ctx_ = nullptr;   ///< llama.cpp's launch context: a small scratch pool
 };

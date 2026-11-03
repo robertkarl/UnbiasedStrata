@@ -6,6 +6,10 @@
 #include "mmq.cuh"
 #include "quantize.cuh"
 
+#ifdef STRATA_POLY_MMQ_TAB
+#include "moe_mmq_tab.hpp"   // declarations: the instances are the per-type TUs CMake generates (poly_mmq_tab/)
+#endif
+
 #include <stdexcept>
 #include <string>
 
@@ -17,7 +21,40 @@ namespace {
     X(Q4_0) X(Q4_1) X(Q5_0) X(Q5_1) X(Q8_0) X(Q2_K) X(Q3_K) X(Q4_K) X(Q5_K) X(Q6_K)                             \
     X(IQ1_S) X(IQ2_XXS) X(IQ2_XS) X(IQ2_S) X(IQ3_XXS) X(IQ3_S) X(IQ4_NL) X(IQ4_XS) X(MXFP4)
 
+// the types with pointer-table instances (CMakeLists.txt, _strata_poly_tab_types): the list above but MXFP4
+#define STRATA_POLY_TAB_TYPES(X)                                                                                \
+    X(Q4_0) X(Q4_1) X(Q5_0) X(Q5_1) X(Q8_0) X(Q2_K) X(Q3_K) X(Q4_K) X(Q5_K) X(Q6_K)                             \
+    X(IQ1_S) X(IQ2_XXS) X(IQ2_XS) X(IQ2_S) X(IQ3_XXS) X(IQ3_S) X(IQ4_NL) X(IQ4_XS)
+
 int64_t pad512(int64_t n) { return (n + 511) / 512 * 512; }
+
+// mul()'s and mul_tab()'s arguments to llama.cpp's launcher: the matrices are the channels of x; the tokens' rows
+// are the columns of y and of dst
+mmq_args args_of(const void* w, ggml_type t, int64_t w_rows, int64_t w_cols, size_t stride, int n, const void* xq,
+                 const int32_t* bounds, const int32_t* ids, int64_t total_rows, int64_t max_rows, float* dst,
+                 int64_t ld_dst) {
+    mmq_args a = {};
+    a.x = (const char*) w;
+    a.type_x = t;
+    a.y = (const int*) xq;
+    a.ids_dst = ids;
+    a.expert_bounds = bounds;
+    a.dst = dst;
+    a.ncols_x = w_cols;
+    a.nrows_x = w_rows;
+    a.stride_row_x = w_cols / ggml_blck_size(t);
+    a.ncols_y = total_rows;
+    a.ncols_dst = total_rows;
+    a.nrows_dst = ld_dst;
+    a.nchannels_x = n;
+    a.nchannels_y = n;
+    a.stride_channel_x = (int64_t) (stride / ggml_type_size(t));
+    a.nsamples_x = 1;
+    a.nsamples_y = 1;
+    a.ncols_max = max_rows;
+    a.ncols_opt = max_rows;
+    return a;
+}
 
 void ck(const char* what) {
     const cudaError_t e = cudaGetLastError();
@@ -85,27 +122,7 @@ void Mmq::mul(const void* w, int type, int64_t w_rows, int64_t w_cols, size_t st
               int64_t ld_dst, void* stream) {
     if (n <= 0 || max_rows <= 0) return;
     const ggml_type t = (ggml_type) type;
-    // the matrices are the channels of x; the tokens' rows are the columns of y and of dst
-    mmq_args a = {};
-    a.x = (const char*) w;
-    a.type_x = t;
-    a.y = (const int*) xq;
-    a.ids_dst = ids;
-    a.expert_bounds = bounds;
-    a.dst = dst;
-    a.ncols_x = w_cols;
-    a.nrows_x = w_rows;
-    a.stride_row_x = w_cols / ggml_blck_size(t);
-    a.ncols_y = total_rows;
-    a.ncols_dst = total_rows;
-    a.nrows_dst = ld_dst;
-    a.nchannels_x = n;
-    a.nchannels_y = n;
-    a.stride_channel_x = (int64_t) (stride / ggml_type_size(t));
-    a.nsamples_x = 1;
-    a.nsamples_y = 1;
-    a.ncols_max = max_rows;
-    a.ncols_opt = max_rows;
+    const mmq_args a = args_of(w, t, w_rows, w_cols, stride, n, xq, bounds, ids, total_rows, max_rows, dst, ld_dst);
 
     auto& ctx = *(ggml_backend_cuda_context*) ctx_;
     const cudaStream_t s = (cudaStream_t) stream;
@@ -116,6 +133,53 @@ void Mmq::mul(const void* w, int type, int64_t w_rows, int64_t w_cols, size_t st
         default: throw std::runtime_error("mmq: tensor type " + std::to_string(type) + " is not built");
     }
     ck("mmq product");
+}
+
+bool Mmq::tab(int type) {
+#ifdef STRATA_POLY_MMQ_TAB
+    switch ((ggml_type) type) {
+#define X(T) case GGML_TYPE_##T:
+        STRATA_POLY_TAB_TYPES(X)
+#undef X
+        return true;
+        default: return false;
+    }
+#else
+    (void) type;
+    return false;
+#endif
+}
+
+bool Mmq::mul_tab(const void* const* w, int type, int64_t w_rows, int64_t w_cols, int n, const void* xq,
+                  const int32_t* bounds, const int32_t* ids, int64_t total_rows, int64_t max_rows, float* dst,
+                  int64_t ld_dst, void* stream) {
+    if (n <= 0 || max_rows <= 0) return true;
+    if (n > kTab) throw std::invalid_argument("mmq: " + std::to_string(n) + " matrices in one pointer-table launch");
+#ifdef STRATA_POLY_MMQ_TAB
+    const ggml_type t = (ggml_type) type;
+    // the stride is not read: each channel's matrix starts where the table says
+    const mmq_args a = args_of(w[0], t, w_rows, w_cols, 0, n, xq, bounds, ids, total_rows, max_rows, dst, ld_dst);
+    strata::prefill::mmq::mmq_x_tab tab = {};
+    for (int i = 0; i < n; ++i) tab.p[i] = (const char*) w[i];
+    auto& ctx = *(ggml_backend_cuda_context*) ctx_;
+    const cudaStream_t s = (cudaStream_t) stream;
+    bool launched = false;
+    switch (t) {
+#define X(T)                                                                                                       \
+    case GGML_TYPE_##T:                                                                                            \
+        launched = strata::prefill::mmq::mul_mat_q_tab_case<GGML_TYPE_##T>(ctx, a, tab, s);                        \
+        break;
+        STRATA_POLY_TAB_TYPES(X)
+#undef X
+        default: return false;
+    }
+    ck("mmq product");
+    return launched;
+#else
+    (void) w; (void) type; (void) w_rows; (void) w_cols; (void) xq; (void) bounds; (void) ids; (void) total_rows;
+    (void) dst; (void) ld_dst; (void) stream;
+    return false;
+#endif
 }
 
 }  // namespace strata::poly
