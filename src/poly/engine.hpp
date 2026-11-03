@@ -139,6 +139,8 @@ struct Layer {
 /// (gpu_experts, cpu_experts), and in a prompt batch from the cache or the staging buffer (batch_*).
 struct Stats {
     int64_t tokens = 0, gpu_experts = 0, cpu_experts = 0, batch_cached = 0, batch_staged = 0;
+    int64_t staged_experts = 0;    ///< an answer's experts outside VRAM copied to the card and computed there
+                                   ///< (--stage-rows): misses, like cpu_experts
     int64_t swapped_experts = 0;   ///< experts that took a cached one's slot (follow())
     int64_t tail_experts = 0;      ///< a token's experts left out by Options::tail_skip
     double cpu_ms = 0, route_wait_ms = 0;

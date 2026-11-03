@@ -2020,6 +2020,7 @@ const Stats& Engine::stats() const {
         const Stats& s = e->stats_;
         all_stats_.gpu_experts += s.gpu_experts;
         all_stats_.cpu_experts += s.cpu_experts;
+        all_stats_.staged_experts += s.staged_experts;
         all_stats_.batch_cached += s.batch_cached;
         all_stats_.batch_staged += s.batch_staged;
         all_stats_.swapped_experts += s.swapped_experts;
@@ -2532,8 +2533,9 @@ void Engine::moe_rows(Layer& L, int il, int n) {
        "expert rows");
 
     const int rc = bounds[n_cached];   // the rows of the cached experts
-    if (answer) {
-        stats_.gpu_experts += rc;   // an answer's window: counted as decoding
+    if (answer) {   // an answer's window: counted as decoding, the staged rows as misses
+        stats_.gpu_experts += rc;
+        stats_.staged_experts += rg - rc;
     } else {
         stats_.batch_cached += rc;
         stats_.batch_staged += rg - rc;
