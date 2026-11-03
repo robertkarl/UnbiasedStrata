@@ -1013,7 +1013,9 @@ std::unique_ptr<Engine> Engine::open(const Options& o) {
     }
     // STRATA_BLOCKING_SYNC=1: the thread that waits for the card sleeps on it instead of spinning (a laptop whose
     // CPU shares the card's heat); a wake costs some microseconds a wait.
-    if (const char* v = std::getenv("STRATA_BLOCKING_SYNC"); v && std::atoi(v) != 0)
+    if (const char* v = std::getenv("STRATA_BLOCKING_SYNC"); v && std::atoi(v) != 0) {
+        int was = 0;   // an unsplit engine loads on the caller's card: leave it selected
+        ck(cudaGetDevice(&was), "cudaGetDevice");
         for (int d = 0; d < std::max(1, devices); ++d) {
             ck(cudaSetDevice(d), "cudaSetDevice");
             if (cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync) != cudaSuccess) {
@@ -1021,6 +1023,8 @@ std::unique_ptr<Engine> Engine::open(const Options& o) {
                 std::fprintf(stderr, "strata-poly: card %d: could not set blocking sync\n", d);
             }
         }
+        ck(cudaSetDevice(was), "cudaSetDevice");
+    }
     if (starts.empty()) {
         std::unique_ptr<Engine> engine = make();
         engine->load(o);
