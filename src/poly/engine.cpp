@@ -1850,7 +1850,7 @@ void Engine::alloc() {
     for (int il = 0; il < n_layer_; ++il) {
         Layer& L = layers_[(size_t) il];
         if (!L.moe) continue;
-        L.mmq = opt_.gpu_experts && rows_ >= kStageRows && Mmq::fits((int) L.gu_type, 2 * n_ff_exp_, n_embd_) &&
+        L.mmq = opt_.gpu_experts && rows_ >= opt_.stage_rows && Mmq::fits((int) L.gu_type, 2 * n_ff_exp_, n_embd_) &&
                 Mmq::fits((int) L.d_type, n_embd_, n_ff_exp_);
         tiles = tiles || L.mmq;
         one_expert = std::max(one_expert, 2 * L.gu_bytes + L.d_bytes);
