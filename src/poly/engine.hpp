@@ -702,6 +702,7 @@ protected:
     std::vector<uint8_t> sent_;
     // A call that copies only the experts it routes to leaves some of those outside VRAM to the CPU (moe_rows()).
     std::vector<uint8_t> on_cpu_;  ///< per expert of the layer: the CPU's
+    std::vector<uint8_t> left_out_; ///< per expert of the layer: left out by Options::tail_skip
     std::vector<int32_t> spare_;   ///< the layer's routed experts outside VRAM, the fewest tokens' first
     std::vector<CpuExpert> host_;  ///< their uses, by token
     double share_[5] = {0.25, 0.25, 0.25, 0.25, 0.25};   ///< the CPU's share of spare_, by the call's tokens:

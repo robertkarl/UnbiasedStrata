@@ -2425,6 +2425,23 @@ void Engine::moe_rows(Layer& L, int il, int n) {
         // what moe() counts for follow(): the cache keeps trading for the experts the answer uses
         if (answer && n_swap_ > 0) recent_[(size_t) il * n_expert_ + (size_t) ids_[(size_t) i]] += 1.f;
     }
+    // Options::tail_skip, as moe() applies it to the calls that went through it before --stage-rows was lowered: an
+    // expert outside VRAM that every token of the window ranks at tail_skip or later is left out.  Its rows keep no
+    // weight and take no place among the card's or the CPU's.
+    int n_tail = 0;
+    left_out_.assign((size_t) n_expert_, 0);
+    if (answer && opt_.tail_skip > 0) {
+        for (int i = 0; i < rr; ++i)
+            if (i % n_used_ < opt_.tail_skip) left_out_[(size_t) ids_[(size_t) i]] = 2;   // ranked high by a token: kept
+        for (int e = 0; e < n_expert_; ++e) {
+            const bool out = count_[(size_t) e] > 0 && !L.slot[(size_t) e] && left_out_[(size_t) e] != 2;
+            left_out_[(size_t) e] = out;
+            if (!out) continue;
+            stats_.tail_experts += count_[(size_t) e];
+            n_tail += count_[(size_t) e];
+            count_[(size_t) e] = 0;
+        }
+    }
     // The CPU computes some of the routed experts outside VRAM while the others are copied: the ones the fewest
     // tokens chose, whose copy costs as much as any other's and which cost the CPU about as much as their tokens.
     int n_spare = 0, n_cpu = 0;
@@ -2474,6 +2491,10 @@ void Engine::moe_rows(Layer& L, int il, int n) {
     host_.clear();
     for (int i = 0; i < rr; ++i) {
         const size_t e = (size_t) ids_[(size_t) i];
+        if (left_out_[e]) {   // left out (tail_skip): no row, and nothing of it in the sum
+            w[i] = 0.f;
+            continue;
+        }
         if (on_cpu_[e]) {   // by token, as cpu_experts() takes them, and nothing of it in the card's sum
             host_.push_back({L.exp_gate + e * L.gu_stride, L.exp_up + e * L.gu_stride, L.exp_down + e * L.d_bytes,
                              w[i], i / n_used_});
@@ -2522,9 +2543,10 @@ void Engine::moe_rows(Layer& L, int il, int n) {
     const int gt = (int) L.gu_type, dt = (int) L.d_type;
     const int64_t ff = n_ff_exp_, ff2 = 2 * ff;
     int holds = -1;   // the round in the buffer when this call is done
-    // The card's part.  With the CPU's beside it, the rows of its experts' places are left at nothing.
+    // The card's part.  With the CPU's beside it, or experts left out, the rows of those places are left at nothing.
     const auto card = [&] {
-        if (n_cpu > 0) ck(cudaMemsetAsync(dx_, 0, (size_t) rr * n_embd_ * sizeof(float), cs(st_)), "expert rows");
+        if (n_cpu > 0 || n_tail > 0)
+            ck(cudaMemsetAsync(dx_, 0, (size_t) rr * n_embd_ * sizeof(float), cs(st_)), "expert rows");
         if (rg > 0) Mmq::quantize(xn_, d_tok, mq_, gt, n_embd_, n_embd_, rg, st_);
 
         // The cached experts whose slots lie one behind the other are the matrices of one launch, as the experts of
