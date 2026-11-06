@@ -212,6 +212,7 @@ public:
             if (rc < 0) { err = "the engine exited"; return false; }
             if (rc == 0) { continue; }
             if (got.rfind(reply_prefix, 0) == 0) { reply = got; return true; }
+            if (got.rfind("SERR", 0) == 0) { err = got; return false; }
             if (got.rfind("ERR", 0) == 0) { err = got.size() > 4 ? got.substr(4) : "the engine reported an error"; return false; }
         }
     }

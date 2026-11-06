@@ -15,14 +15,24 @@
 #pragma once
 
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <new>
+#include <string>
 #include <utility>
 #include <vector>
+
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <unistd.h>
+#endif
 
 namespace strata::poly {
 
@@ -33,9 +43,170 @@ struct CacheOptions {
     int64_t park_mib = 0;      ///< host memory for parked conversations; 0: none is parked
     int park_slots = 4;        ///< parked conversations at most
     int64_t park_min = 1024;   ///< a conversation with fewer tokens before its last checkpoint is not parked
+    int64_t session_min_free_mib = 4096;  ///< a session SAVE must leave this much free on its disk
     std::function<bool(size_t)> admit;   ///< whether the host can spare this many bytes; unset: it can
     FILE* log = nullptr;       ///< where parking is reported; the server reads these lines
 };
+
+namespace detail {
+
+/// FNV-1a: corruption and identity checks for session files, not authentication.
+inline uint64_t session_fnv(uint64_t h, const void* data, size_t n) {
+    const uint8_t* p = static_cast<const uint8_t*>(data);
+    for (size_t i = 0; i < n; ++i) {
+        h ^= p[i];
+        h *= 1099511628211ull;
+    }
+    return h;
+}
+constexpr uint64_t kSessionFnvSeed = 1469598103934665603ull;
+
+#ifndef _WIN32
+struct SessionOut {
+    int fd = -1;
+    std::string tmp;
+    uint64_t hash = kSessionFnvSeed;
+    uint64_t total = 0;
+
+    ~SessionOut() { abort(); }
+
+    bool open(const std::string& path, std::string& err) {
+        tmp = path + ".tmp." + std::to_string((long long) ::getpid());
+        fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (fd < 0) {
+            err = std::string("open: ") + std::strerror(errno);
+            return false;
+        }
+        return true;
+    }
+    bool put_raw(const void* p, size_t n, std::string& err) {
+        const uint8_t* q = static_cast<const uint8_t*>(p);
+        while (n > 0) {
+            const ssize_t w = ::write(fd, q, n);
+            if (w < 0 && errno == EINTR) continue;
+            if (w <= 0) {
+                err = std::string("write: ") + std::strerror(errno);
+                return false;
+            }
+            q += w;
+            n -= (size_t) w;
+            total += (uint64_t) w;
+        }
+        return true;
+    }
+    bool put(const void* p, size_t n, std::string& err) {
+        hash = session_fnv(hash, p, n);
+        return put_raw(p, n, err);
+    }
+    bool finish(const std::string& path, std::string& err, uint64_t& bytes) {
+        const uint64_t h = hash;
+        static const char end[8] = {'P', 'O', 'L', 'Y', 'E', 'N', 'D', '!'};
+        if (!put_raw(&h, sizeof h, err) || !put_raw(end, sizeof end, err)) return false;
+        if (::fsync(fd) != 0) {
+            err = std::string("fsync: ") + std::strerror(errno);
+            return false;
+        }
+        if (::close(fd) != 0) {
+            fd = -1;
+            err = std::string("close: ") + std::strerror(errno);
+            return false;
+        }
+        fd = -1;
+        if (::rename(tmp.c_str(), path.c_str()) != 0) {
+            err = std::string("rename: ") + std::strerror(errno);
+            return false;
+        }
+        bytes = total;
+        tmp.clear();
+        return true;
+    }
+    void abort() {
+        if (fd >= 0) ::close(fd);
+        fd = -1;
+        if (!tmp.empty()) ::unlink(tmp.c_str());
+        tmp.clear();
+    }
+};
+
+struct SessionIn {
+    int fd = -1;
+    uint64_t hash = kSessionFnvSeed;
+    uint64_t total = 0;
+
+    ~SessionIn() { if (fd >= 0) ::close(fd); }
+
+    bool open(const std::string& path, std::string& err) {
+        fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+        if (fd < 0) {
+            err = std::string("open: ") + std::strerror(errno);
+            return false;
+        }
+        struct stat st;
+        if (::fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+            err = "not a regular file";
+            return false;
+        }
+        total = (uint64_t) st.st_size;
+        return true;
+    }
+    bool get_raw(void* p, size_t n, std::string& err) {
+        uint8_t* q = static_cast<uint8_t*>(p);
+        while (n > 0) {
+            const ssize_t r = ::read(fd, q, n);
+            if (r < 0 && errno == EINTR) continue;
+            if (r <= 0) {
+                err = "truncated session file";
+                return false;
+            }
+            q += r;
+            n -= (size_t) r;
+        }
+        return true;
+    }
+    bool get(void* p, size_t n, std::string& err) {
+        if (!get_raw(p, n, err)) return false;
+        hash = session_fnv(hash, p, n);
+        return true;
+    }
+    bool finish(std::string& err) {
+        uint64_t h = 0;
+        char end[8] = {};
+        if (!get_raw(&h, sizeof h, err) || !get_raw(end, sizeof end, err)) return false;
+        static const char want[8] = {'P', 'O', 'L', 'Y', 'E', 'N', 'D', '!'};
+        if (std::memcmp(end, want, sizeof want) != 0) {
+            err = "not a poly session file (bad trailer)";
+            return false;
+        }
+        if (h != hash) {
+            err = "session file checksum mismatch";
+            return false;
+        }
+        return true;
+    }
+};
+#endif
+
+inline bool session_disk_room(const std::string& path, uint64_t need, std::string& err) {
+#ifndef _WIN32
+    const size_t slash = path.find_last_of('/');
+    const std::string dir = slash == std::string::npos ? "." : (slash == 0 ? "/" : path.substr(0, slash));
+    struct statvfs vfs;
+    if (::statvfs(dir.c_str(), &vfs) != 0) {
+        err = std::string("statvfs: ") + std::strerror(errno);
+        return false;
+    }
+    const uint64_t freeb = (uint64_t) vfs.f_bavail * (uint64_t) vfs.f_frsize;
+    if (freeb < need) {
+        err = "not enough free disk space for the session file";
+        return false;
+    }
+#else
+    (void) path; (void) need; (void) err;
+#endif
+    return true;
+}
+
+}  // namespace detail
 
 template<class E>
 class Conversations {
@@ -188,6 +359,204 @@ public:
     size_t parked() const { return held(slots_.size()).count; }
     size_t parked_bytes() const { return held(slots_.size()).bytes; }
     size_t evictions() const { return evictions_; }
+
+    /// Writes the current conversation, up to its last checkpoint, to `path`.  `identity` binds the file to the
+    /// model; a restore with another identity is refused.  On success `tokens` and `bytes` describe the file.
+    bool save_session(const std::string& path, const std::string& identity, uint64_t& tokens, uint64_t& bytes,
+                      std::string& err) {
+#ifdef _WIN32
+        (void) path; (void) identity; (void) tokens; (void) bytes;
+        err = "session files are not supported on this Windows build";
+        return false;
+#else
+        if (o_.checkpoints < 1) {
+            err = "session files need --prompt-cache > 0";
+            return false;
+        }
+        Slot& s = cur();
+        if (s.marks.empty() || s.marks.back().pos <= 0) {
+            err = "no complete session to save";
+            return false;
+        }
+        const int64_t end = s.marks.back().pos;
+        const size_t rb = e_.row_bytes(), sb = e_.state_bytes();
+        for (const Checkpoint& m : s.marks) {
+            if (!m.state || m.state->bytes != sb) {
+                err = "checkpoint state has the wrong size";
+                return false;
+            }
+        }
+        BlobPtr all = blob((size_t) end * rb);
+        if (!all) {
+            err = "out of memory";
+            return false;
+        }
+        for (const Rows& r : s.rows) {
+            if (r.first >= end) continue;
+            const int64_t n = std::min(r.keep, end - r.first);
+            if (n > 0) {
+                std::memcpy(all->p.get() + (size_t) r.first * rb, r.blob->p.get(), (size_t) n * rb);
+            }
+        }
+        const int64_t from = saved(s);
+        if (from < end) {
+            try {
+                e_.save_rows(from, end - from, all->p.get() + (size_t) from * rb);
+            } catch (const std::exception& ex) {
+                err = std::string("capture: ") + ex.what();
+                return false;
+            }
+        }
+        // Serialize a copy ending at the last checkpoint; the live conversation and the engine stay where they are.
+        Slot save = s;
+        save.seq.resize((size_t) end);
+        save.prompt = std::min<int64_t>(save.prompt, end);
+        save.rows.clear();
+        save.rows.push_back({all, 0, end, end});
+        // One state, the deepest checkpoint: the others would copy the same fixed recurrent state again.  A restore
+        // resumes from here and re-reads at most the tokens after this checkpoint, as --strata's files do.
+        if (save.marks.size() > 1) save.marks = {save.marks.back()};
+
+        uint64_t total = 84 + (uint64_t) end * sizeof(int32_t) + 16 + 8 + (uint64_t) end * rb;
+        for (const Checkpoint& m : save.marks) total += 16 + m.state->bytes;
+        if (!detail::session_disk_room(path, total + ((uint64_t) o_.session_min_free_mib << 20), err)) {
+            return false;
+        }
+        detail::SessionOut out;
+        if (!out.open(path, err)) return false;
+        const char magic[16] = "USTRPOLYSESSION";
+        const uint32_t version = 1;
+        uint64_t id = detail::session_fnv(detail::kSessionFnvSeed, identity.data(), identity.size());
+        const uint64_t nctx = (uint64_t) e_.max_context();
+        id = detail::session_fnv(id, &nctx, sizeof nctx);
+        id = detail::session_fnv(id, &rb, sizeof rb);
+        id = detail::session_fnv(id, &sb, sizeof sb);
+        const uint64_t seq_len = (uint64_t) end;
+        const uint64_t prompt = (uint64_t) save.prompt;
+        const uint64_t nmarks = save.marks.size();
+        const uint64_t rows_bytes = (uint64_t) end * rb;
+        bool ok = out.put(magic, sizeof magic, err) && out.put(&version, sizeof version, err) &&
+                  out.put(&id, sizeof id, err) && out.put(&nctx, sizeof nctx, err) &&
+                  out.put(&rb, sizeof rb, err) && out.put(&sb, sizeof sb, err) &&
+                  out.put(&seq_len, sizeof seq_len, err) && out.put(&prompt, sizeof prompt, err) &&
+                  out.put(&nmarks, sizeof nmarks, err) && out.put(&rows_bytes, sizeof rows_bytes, err);
+        if (ok) ok = out.put(save.seq.data(), save.seq.size() * sizeof(int32_t), err);
+        for (const Checkpoint& m : save.marks) {
+            if (!ok) break;
+            const uint64_t pos = (uint64_t) m.pos;
+            const uint64_t n = (uint64_t) m.state->bytes;
+            ok = out.put(&pos, sizeof pos, err) && out.put(&n, sizeof n, err) &&
+                 out.put(m.state->p.get(), m.state->bytes, err);
+        }
+        if (ok) ok = out.put(save.rows[0].blob->p.get(), save.rows[0].blob->bytes, err);
+        if (!ok) return false;
+        if (!out.finish(path, err, bytes)) return false;
+        tokens = seq_len;
+        return true;
+#endif
+    }
+
+    /// Loads a conversation written by save_session() into the engine.  The file is fully validated before the
+    /// engine is touched; a bad file leaves the engine as it was.
+    bool restore_session(const std::string& path, const std::string& identity, uint64_t& tokens, uint64_t& bytes,
+                         std::string& err) {
+#ifdef _WIN32
+        (void) path; (void) identity; (void) tokens; (void) bytes;
+        err = "session files are not supported on this Windows build";
+        return false;
+#else
+        if (o_.checkpoints < 1) {
+            err = "session files need --prompt-cache > 0";
+            return false;
+        }
+        detail::SessionIn in;
+        if (!in.open(path, err)) return false;
+        char magic[16] = {};
+        uint32_t version = 0;
+        uint64_t id = 0, nctx = 0, rb = 0, sb = 0, seq_len = 0, prompt = 0, nmarks = 0, rows_bytes = 0;
+        const char want_magic[16] = "USTRPOLYSESSION";
+        bool ok = in.get(magic, sizeof magic, err) && in.get(&version, sizeof version, err) &&
+                  in.get(&id, sizeof id, err) && in.get(&nctx, sizeof nctx, err) &&
+                  in.get(&rb, sizeof rb, err) && in.get(&sb, sizeof sb, err) &&
+                  in.get(&seq_len, sizeof seq_len, err) && in.get(&prompt, sizeof prompt, err) &&
+                  in.get(&nmarks, sizeof nmarks, err) && in.get(&rows_bytes, sizeof rows_bytes, err);
+        if (!ok) return false;
+        if (std::memcmp(magic, want_magic, sizeof magic) != 0 || version != 1) {
+            err = "not a poly session file (bad header)";
+            return false;
+        }
+        if (nctx != (uint64_t) e_.max_context() || rb != e_.row_bytes() || sb != e_.state_bytes()) {
+            err = "session file was written by another model or engine configuration";
+            return false;
+        }
+        if (seq_len == 0 || seq_len > nctx || nmarks == 0 || nmarks > 4096 || rows_bytes != seq_len * rb) {
+            err = "session file has invalid sizes";
+            return false;
+        }
+        uint64_t want_id = detail::session_fnv(detail::kSessionFnvSeed, identity.data(), identity.size());
+        want_id = detail::session_fnv(want_id, &nctx, sizeof nctx);
+        want_id = detail::session_fnv(want_id, &rb, sizeof rb);
+        want_id = detail::session_fnv(want_id, &sb, sizeof sb);
+        if (id != want_id) {
+            err = "session file belongs to another model";
+            return false;
+        }
+        Slot s;
+        s.seq.resize((size_t) seq_len);
+        if (!in.get(s.seq.data(), s.seq.size() * sizeof(int32_t), err)) return false;
+        int64_t last = 0;
+        for (uint64_t i = 0; i < nmarks; ++i) {
+            uint64_t pos = 0, n = 0;
+            if (!in.get(&pos, sizeof pos, err) || !in.get(&n, sizeof n, err)) return false;
+            if (n != sb || pos <= 0 || pos > seq_len || (int64_t) pos <= last) {
+                err = "session file has an invalid checkpoint";
+                return false;
+            }
+            BlobPtr b = blob((size_t) n);
+            if (!b) {
+                err = "out of memory";
+                return false;
+            }
+            if (!in.get(b->p.get(), b->bytes, err)) return false;
+            s.marks.push_back({(int64_t) pos, std::move(b)});
+            last = (int64_t) pos;
+        }
+        BlobPtr rows = blob((size_t) rows_bytes);
+        if (!rows) {
+            err = "out of memory";
+            return false;
+        }
+        if (!in.get(rows->p.get(), rows->bytes, err) || !in.finish(err)) return false;
+        if (s.marks.back().pos != (int64_t) seq_len) {
+            err = "session file does not end at its last checkpoint";
+            return false;
+        }
+        s.prompt = std::min<int64_t>((int64_t) prompt, (int64_t) seq_len);
+        s.rows.push_back({rows, 0, (int64_t) seq_len, (int64_t) seq_len});
+        bytes = in.total;
+        try {
+            e_.reset();
+        } catch (const std::exception& ex) {
+            err = std::string("reset: ") + ex.what();
+            return false;
+        }
+        slots_[cur_] = std::move(s);
+        try {
+            Rows& r = slots_[cur_].rows[0];
+            e_.load_rows(r.blob->p.get(), 0, (int64_t) seq_len, 0, (int64_t) seq_len);
+            e_.load_state(slots_[cur_].marks.back().state->p.get(), (int64_t) seq_len);
+        } catch (const std::exception& ex) {
+            slots_[cur_] = Slot{};
+            try { e_.reset(); } catch (const std::exception&) {}
+            err = std::string("load: ") + ex.what();
+            return false;
+        }
+        due_.clear();
+        turn_ = -1;
+        tokens = seq_len;
+        return true;
+#endif
+    }
 
 private:
     using Clock = std::chrono::steady_clock;
