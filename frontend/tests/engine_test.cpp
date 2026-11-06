@@ -12,10 +12,21 @@
 //   7. a DONE whose prompt size does not match is visible to the caller (the context refuses such a reply)
 #include "engine.hpp"
 
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <thread>
 #include <vector>
+
+#ifdef _WIN32
+// the child inherits this process's environment when it is created, as with fork+exec
+static void set_env(const std::string & k, const std::string & v) { _putenv_s(k.c_str(), v.c_str()); }
+static void unset_env(const std::string & k) { _putenv_s(k.c_str(), ""); }
+#else
+static void set_env(const std::string & k, const std::string & v) { ::setenv(k.c_str(), v.c_str(), 1); }
+static void unset_env(const std::string & k) { ::unsetenv(k.c_str()); }
+#endif
 
 using strata_frontend::Engine;
 using strata_frontend::EngineLine;
@@ -55,10 +66,10 @@ static Run run(Engine & e, int cancel_after = -1, int timeout_ms = 5000) {
 }
 
 static bool start(Engine & e, const std::string & script, const std::vector<std::pair<std::string, std::string>> & env) {
-    for (auto & kv : env) ::setenv(kv.first.c_str(), kv.second.c_str(), 1);
+    for (auto & kv : env) set_env(kv.first, kv.second);
     std::string err;
     const bool ok = e.start(script, {script}, err) && e.wait_ready(err, 10);
-    for (auto & kv : env) ::unsetenv(kv.first.c_str());
+    for (auto & kv : env) unset_env(kv.first);
     if (!ok) std::fprintf(stderr, "start: %s\n", err.c_str());
     return ok;
 }
@@ -141,7 +152,7 @@ int main(int argc, char ** argv) {
         CHECK(r.got_eof);
         CHECK(r.tokens.size() == 3);
         std::string why;
-        for (int i = 0; i < 50 && !e.reap_exit(why); ++i) ::usleep(10 * 1000);
+        for (int i = 0; i < 50 && !e.reap_exit(why); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
         CHECK(why == "engine exited with code 3");
         CHECK(!e.alive());
     }

@@ -2259,6 +2259,11 @@ if(STRATA_FRONTEND AND STRATA_NATIVE_EXPERTS)
              LLAMA_USE_PREBUILT_UI LLAMA_OPENSSL LLAMA_LLGUIDANCE LLAMA_ALL_WARNINGS LLAMA_CURL)
     set(${_o} OFF CACHE BOOL "" FORCE)
   endforeach()
+  # MSVC: report the real __cplusplus (202002L here, not 199711L), or llama.cpp's own C++20 test (llama-chat.cpp's
+  # LU8) takes its C++17 branch and u8 literals do not compile. Directory scope: only the targets made below get it.
+  if(MSVC)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>)
+  endif()
   add_subdirectory(${STRATA_GGML_DIR} ${CMAKE_BINARY_DIR}/llama.cpp EXCLUDE_FROM_ALL)
 
   # The engine-agnostic files of llama.cpp's tools/server, compiled as they are from the submodule: the HTTP layer,

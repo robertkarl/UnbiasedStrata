@@ -27,7 +27,17 @@
 #include <thread>
 #include <vector>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
 #include <unistd.h>
+#endif
 
 namespace {
 
@@ -65,6 +75,43 @@ void usage() {
         "      -- --model Qwen3.6-35B-A3B-UD-Q3_K_M.gguf --max-context 32768\n");
 }
 
+#ifdef _WIN32
+std::string self_dir() {
+    wchar_t wbuf[32768];
+    const DWORD n = ::GetModuleFileNameW(nullptr, wbuf, (DWORD) (sizeof wbuf / sizeof wbuf[0]));
+    if (n == 0 || n >= sizeof wbuf / sizeof wbuf[0]) {
+        return ".";
+    }
+    char buf[65536];
+    const int m = ::WideCharToMultiByte(CP_UTF8, 0, wbuf, (int) n, buf, (int) sizeof buf - 1, nullptr, nullptr);
+    if (m <= 0) {
+        return ".";
+    }
+    std::string p(buf, (size_t) m);
+    const size_t slash = p.find_last_of("\\/");
+    return slash == std::string::npos ? "." : p.substr(0, slash);
+}
+
+// an existing regular file (Windows has no execute bit; CreateProcess says whether it is a program)
+bool file_exists(const std::string & p) {
+    const int n = ::MultiByteToWideChar(CP_UTF8, 0, p.c_str(), -1, nullptr, 0);
+    std::wstring w(n > 0 ? (size_t) n : 1, L'\0');
+    ::MultiByteToWideChar(CP_UTF8, 0, p.c_str(), -1, &w[0], n);
+    const DWORD a = ::GetFileAttributesW(w.c_str());
+    return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+// Ctrl-C, Ctrl-Break and closing the console window: the same shutdown as SIGINT/SIGTERM on Linux
+BOOL WINAPI console_handler(DWORD type) {
+    switch (type) {
+        case CTRL_C_EVENT: case CTRL_BREAK_EVENT: case CTRL_CLOSE_EVENT: case CTRL_LOGOFF_EVENT: case CTRL_SHUTDOWN_EVENT:
+            signal_handler(SIGINT);
+            return TRUE;
+        default:
+            return FALSE;
+    }
+}
+#else
 std::string self_dir() {
     char buf[4096];
     const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof buf - 1);
@@ -80,6 +127,7 @@ std::string self_dir() {
 bool file_exists(const std::string & p) {
     return ::access(p.c_str(), X_OK) == 0;
 }
+#endif
 
 } // namespace
 
@@ -129,12 +177,27 @@ int main(int argc, char ** argv) {
         usage();
         return 2;
     }
+#ifdef _WIN32
+    // a bare name is looked up beside this program, with or without .exe; a relative path stays relative
+    if (engine_exe.find_first_of("/\\:") == std::string::npos) {
+        const std::string beside = self_dir() + "\\" + engine_exe;
+        if (file_exists(beside)) {
+            engine_exe = beside;
+        } else if (file_exists(beside + ".exe")) {
+            engine_exe = beside + ".exe";
+        }
+    }
+    if (!file_exists(engine_exe) && file_exists(engine_exe + ".exe")) {
+        engine_exe += ".exe";
+    }
+#else
     if (engine_exe.find('/') == std::string::npos) {
         const std::string beside = self_dir() + "/" + engine_exe;
         if (file_exists(beside)) {
             engine_exe = beside;
         }
     }
+#endif
     if (!file_exists(engine_exe)) {
         std::fprintf(stderr, "unbiased-strata: engine not found or not executable: %s\n", engine_exe.c_str());
         return 2;
@@ -208,12 +271,18 @@ int main(int argc, char ** argv) {
     shutdown_handler = [&](int) {
         ctx_server.terminate();
     };
+#ifdef _WIN32
+    ::SetConsoleCtrlHandler(console_handler, TRUE);
+    std::signal(SIGINT,  signal_handler);
+    std::signal(SIGTERM, signal_handler);
+#else
     struct sigaction sigint_action;
     sigint_action.sa_handler = signal_handler;
     sigemptyset(&sigint_action.sa_mask);
     sigint_action.sa_flags = 0;
     sigaction(SIGINT,  &sigint_action, NULL);
     sigaction(SIGTERM, &sigint_action, NULL);
+#endif
 
     // the engine's exit ends this process too, with a non-zero code, so a unit with Restart=on-failure brings both
     // back. A replacement engine is not forked from this multithreaded process (UnbiasedStrata 1 main.cpp:873).

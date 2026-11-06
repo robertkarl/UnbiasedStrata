@@ -87,6 +87,23 @@ make test
 make build CUDA_ARCHS=89                                        # 6m40 on 16 cores, 557 MB, 0 warnings
 ```
 
+### Windows
+
+The same steps in PowerShell, with Visual Studio 2022 or newer (C++ workload; its CMake and Ninja are used), a CUDA
+12.x toolkit, and for the tests Git for Windows (bash, curl) and Python 3:
+
+```
+git submodule update --init
+.\make.ps1 build                    # build\bin\{strata,strata-poly,strata-dsv41,unbiased-strata}.exe, strata_kq.dll, the CUDA DLLs
+.\make.ps1 test                     # the front end against the fake engine, as make test
+.\make.ps1 build -CudaArchs 89      # one card's arch, several times faster (the Makefile's CUDA_ARCHS)
+```
+
+`make.ps1` takes the Makefile's CMake flags, picks the newest MSVC toolset nvcc accepts (CUDA 12.6: 14.4x) and links
+the shared CUDA runtime (MSVC with CUDA 12.x fails with LNK1169 otherwise, #585). The front end starts the engine
+with CreateProcess and ends it through a job object, so a killed server never leaves an engine behind. Paths after
+`--` are Windows paths; `frontend/tests/*-real-engine.sh` run from Git Bash.
+
 ## Run
 
 ```

@@ -35,10 +35,12 @@ t0=$(date +%s.%N); post /v1/chat/completions "{\"model\":\"$MODEL\",\"messages\"
 echo "next request: $(j 'd["choices"][0]["message"]["content"]' < "$OUT/6-after-disconnect.json") in $(python3 -c "print(round($t1-$t0,2))") s"
 
 echo "== 7. a long prompt (~24k tokens) streamed: time to first byte, SSE pings while the prompt is read"
-big=$(python3 -c 'import random; random.seed(1); w="alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau".split(); print(" ".join(random.choice(w) for _ in range(16000)))')
-python3 - "$URL" "$MODEL" "$big" "$OUT/7-long-prompt.sse" <<'PY'
-import sys,json,time,urllib.request
-url,model,big,out=sys.argv[1:]
+# the prompt is made inside Python, not passed as an argument: Windows caps a command line at 32K characters
+python3 - "$URL" "$MODEL" "$OUT/7-long-prompt.sse" <<'PY'
+import sys,json,time,urllib.request,random
+url,model,out=sys.argv[1:]
+random.seed(1); w="alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau".split()
+big=" ".join(random.choice(w) for _ in range(16000))
 body=json.dumps({"model":model,"stream":True,"messages":[{"role":"user","content":"Here is a list of Greek letters: "+big+"\n\nHow many times does the word 'omicron' appear? Give a rough estimate in one sentence."}],"max_tokens":64,"temperature":0.6,"top_p":0.95,"top_k":20,"chat_template_kwargs":{"enable_thinking":False}}).encode()
 req=urllib.request.Request(url+"/v1/chat/completions",data=body,headers={"content-type":"application/json"})
 t0=time.time(); first=None; pings=0; chunks=0; raw=b""

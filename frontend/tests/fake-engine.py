@@ -17,8 +17,9 @@ Environment variables choose the answers, so one script covers the cases:
   FAKE_PROMPT_N   if set, lie about the prompt size in DONE (mismatch test)
 """
 import os
-import select
+import queue
 import sys
+import threading
 import time
 
 out = sys.stdout
@@ -36,31 +37,44 @@ say("READY %s%s" % (env("FAKE_CONTEXT", "4096"), "" if env("FAKE_NO_STOP") else 
 first = True
 pending = []  # lines read while checking for STOP that are not STOP/QUIT
 
+# stdin is read on a thread of its own (select() does not take a pipe on Windows); None marks its end
+lines = queue.Queue()
+
+
+def _reader():
+    for line in sys.stdin:
+        lines.put(line.rstrip("\r\n"))
+    lines.put(None)
+
+
+threading.Thread(target=_reader, daemon=True).start()
+
 
 def readline():
     if pending:
         return pending.pop(0)
-    line = sys.stdin.readline()
-    if line == "":
-        sys.exit(0)
-    return line.rstrip("\n")
+    line = lines.get()
+    if line is None:
+        os._exit(0)
+    return line
 
 
 def stop_requested():
     """Consume what is readable now; True if a STOP was among it."""
     stop = False
-    while select.select([sys.stdin], [], [], 0)[0]:
-        line = sys.stdin.readline()
-        if line == "":
-            sys.exit(0)
-        line = line.rstrip("\n")
+    while True:
+        try:
+            line = lines.get_nowait()
+        except queue.Empty:
+            return stop
+        if line is None:
+            os._exit(0)
         if line == "STOP":
             stop = True
         elif line == "QUIT":
-            sys.exit(0)
+            os._exit(0)
         else:
             pending.append(line)
-    return stop
 
 
 while True:
