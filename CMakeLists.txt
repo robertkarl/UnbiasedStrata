@@ -94,6 +94,30 @@ option(STRATA_ORCA_Q4KS_MMQ "Build the GGML Q5_0 MMQ instance for OrcaRouter Q4_
 # only (not HIP, not gfx906); switched off at configure time when the llama.cpp tree's mmq.cuh is not one the copy
 # was verified against.
 option(STRATA_MMQ_TAB "Build the pointer-table prompt MMQ for STRATA_MMQ_DIRECT=1 (CUDA; ~37 MiB VRAM per GPU)" OFF)
+# strata-poly: the same pointer-table kernels (src/poly/mmq.cu's Mmq::mul_tab) for the cached experts of a routed
+# layer, so that a layer's cached experts go in one launch per 16 wherever follow() has traded their slots to, instead
+# of one per run of adjacent slots (Engine::moe_rows()).  Off by default for the same reasons: VRAM for the eagerly
+# loaded instances (~2 MiB a type) and nvcc time.  CUDA only, gated by the same fingerprint of mmq.cuh.
+option(STRATA_POLY_MMQ_TAB "Build the pointer-table MMQ for strata-poly's cached experts (CUDA; VRAM per type)" OFF)
+# The SHA-256 of mmq.cuh's mirrored region (mul_mat_q_process_tile through mul_mat_q_case, struct mmq_args included)
+# into `out`, or "" when the region is not found: src/prefill/moe_mmq_tab.cuh is a copy of that text and is used only
+# with a tree it was verified against (_strata_mmq_tab_known, below).
+function(strata_mmq_tab_fingerprint mmq_cuh out)
+  set(_hash "")
+  if(EXISTS ${mmq_cuh})
+    file(READ ${mmq_cuh} _src)
+    string(REPLACE "\r\n" "\n" _src "${_src}")
+    string(FIND "${_src}" "static __device__ __forceinline__ void mul_mat_q_process_tile" _a)
+    string(FIND "${_src}" "#define DECL_MMQ_CASE" _b)
+    if(_a GREATER -1 AND _b GREATER _a)
+      math(EXPR _len "${_b} - ${_a}")
+      string(SUBSTRING "${_src}" ${_a} ${_len} _region)
+      string(SHA256 _hash "${_region}")
+    endif()
+  endif()
+  set(${out} "${_hash}" PARENT_SCOPE)
+endfunction()
+set(_strata_mmq_tab_known 36e4dc716c504470ec09cc0852d29a6ac5eace257f6e5e72db3805ca4f043eb0)
 if(STRATA_PREFILL_MMQ AND NOT STRATA_ENABLE_HIP)
   message(FATAL_ERROR "STRATA_PREFILL_MMQ requires STRATA_ENABLE_HIP=ON")
 endif()
@@ -1617,21 +1641,7 @@ if(STRATA_NATIVE_EXPERTS)
     # fetched pin; the vendored third_party/llama.cpp tree has the same mmq.cuh).
     set(_strata_mmq_tab_on OFF)
     if(STRATA_MMQ_TAB AND NOT STRATA_HIP_GFX906)   # gfx906 compiles no .cu from here (its HIP glob): no tab at all
-      set(_strata_mmq_tab_known 36e4dc716c504470ec09cc0852d29a6ac5eace257f6e5e72db3805ca4f043eb0)
-      set(_strata_mmq_tab_hash "")
-      if(EXISTS ${_strata_mmq}/mmq.cuh)
-        file(READ ${_strata_mmq}/mmq.cuh _strata_mmq_src)
-        string(REPLACE "\r\n" "\n" _strata_mmq_src "${_strata_mmq_src}")
-        string(FIND "${_strata_mmq_src}" "static __device__ __forceinline__ void mul_mat_q_process_tile" _strata_tab_a)
-        string(FIND "${_strata_mmq_src}" "#define DECL_MMQ_CASE" _strata_tab_b)
-        if(_strata_tab_a GREATER -1 AND _strata_tab_b GREATER _strata_tab_a)
-          math(EXPR _strata_tab_len "${_strata_tab_b} - ${_strata_tab_a}")
-          string(SUBSTRING "${_strata_mmq_src}" ${_strata_tab_a} ${_strata_tab_len} _strata_tab_region)
-          string(SHA256 _strata_mmq_tab_hash "${_strata_tab_region}")
-        endif()
-        unset(_strata_mmq_src)
-        unset(_strata_tab_region)
-      endif()
+      strata_mmq_tab_fingerprint(${_strata_mmq}/mmq.cuh _strata_mmq_tab_hash)
       if(_strata_mmq_tab_hash AND _strata_mmq_tab_hash IN_LIST _strata_mmq_tab_known)
         set(_strata_mmq_tab_on ON)
       else()
@@ -2037,7 +2047,27 @@ if(STRATA_NATIVE_EXPERTS AND (STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP) AND NOT S
   add_library(strata_poly_mmq STATIC src/poly/mmq.cu src/prefill/ggml_cuda_host.cu ${_strata_mmq}/quantize.cu
               ${_strata_poly_mmq_instances})
   target_include_directories(strata_poly_mmq PRIVATE ${_strata_gg}/include ${_strata_gg}/src ${_strata_mmq}
-                                                    ${CMAKE_CURRENT_SOURCE_DIR}/include)
+                                                    ${CMAKE_CURRENT_SOURCE_DIR}/include
+                                                    ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill)
+  # STRATA_POLY_MMQ_TAB: the pointer-table kernels (src/prefill/moe_mmq_tab.cuh) for the types above but MXFP4, one
+  # TU each as for strata_mmq, under the same fingerprint of mmq.cuh
+  if(STRATA_POLY_MMQ_TAB AND STRATA_ENABLE_CUDA)
+    strata_mmq_tab_fingerprint(${_strata_mmq}/mmq.cuh _strata_poly_tab_hash)
+    if(_strata_poly_tab_hash AND _strata_poly_tab_hash IN_LIST _strata_mmq_tab_known)
+      set(_strata_tab_cuh ${CMAKE_CURRENT_SOURCE_DIR}/src/prefill/moe_mmq_tab.cuh)
+      set(_strata_poly_tab_types q4_0 q4_1 q5_0 q5_1 q8_0 q2_k q3_k q4_k q5_k q6_k iq1_s iq2_xxs iq2_xs iq2_s
+                                 iq3_xxs iq3_s iq4_nl iq4_xs)
+      foreach(_t IN LISTS _strata_poly_tab_types)
+        string(TOUPPER ${_t} _strata_tab_T)
+        configure_file(src/prefill/mmq_tab_instance.cu.in ${CMAKE_BINARY_DIR}/poly_mmq_tab/mmq-tab-${_t}.cu @ONLY)
+        target_sources(strata_poly_mmq PRIVATE ${CMAKE_BINARY_DIR}/poly_mmq_tab/mmq-tab-${_t}.cu)
+      endforeach()
+      target_compile_definitions(strata_poly_mmq PRIVATE STRATA_POLY_MMQ_TAB=1)
+      message(STATUS "STRATA_POLY_MMQ_TAB on: pointer-table MMQ for strata-poly's cached experts")
+    else()
+      message(STATUS "STRATA_POLY_MMQ_TAB off: mmq.cuh differs from the mirrored scheduler (${_strata_poly_tab_hash})")
+    endif()
+  endif()
   target_compile_options(strata_poly_mmq PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--extended-lambda -use_fast_math>)
   if(MSVC)
     target_compile_options(strata_poly_mmq PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/bigobj>)

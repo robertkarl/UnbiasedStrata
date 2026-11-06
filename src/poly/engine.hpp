@@ -66,6 +66,8 @@ struct Options {
                                   ///< with the CPU's share computed meanwhile); under it the CPU computes every
                                   ///< expert outside VRAM (moe()).  1: an answer's windows stream their misses too
     bool stage_overlap = false;   ///< opt-in: copy a single staging round under the cached experts' kernels
+    bool mmq_tab = false;         ///< opt-in: a layer's cached experts in launches of up to Mmq::kTab wherever their slots lie,
+                                  ///< when that is fewer launches than one per run of adjacent slots
     int expert_swaps = 64;        ///< experts on their way into the cache at a time while an answer is written, each
                                   ///< to the slot of one the answer uses less; 0: the cache stays as it was loaded
     bool stay_near = true;        ///< with several NUMA nodes, keep the CPU threads on the one that holds the experts
@@ -107,6 +109,7 @@ struct Dev {
 struct Layer {
     bool moe = false;
     bool mmq = false;     ///< the card has MMQ tiles for its routed experts' types (Engine::batched())
+    bool tab = false;     ///< and pointer-table kernels for them (Mmq::mul_tab)
     bool fixed = false;   ///< one token's launches can be recorded and replayed for the next ones (eval()): they
                           ///< are the same for every token, or read the position on the card (Engine::at_)
     Dev attn_norm, ffn_norm;   ///< the norms ahead of the attention and of the FFN
@@ -700,6 +703,7 @@ protected:
         int c, j, m, most;   ///< the rows' class, its first cached expert and how many, the most rows one has
     };
     std::vector<Run> runs_;        ///< a layer's launches over cached experts whose slots lie one behind the other
+    bool tab_warned_ = false;      ///< said once why a layer's cached experts go by runs (--mmq-tab)
     std::vector<int32_t> chan_;    ///< a layer's cached experts in the order of their slots
     std::vector<uint8_t> sent_;
     // A call that copies only the experts it routes to leaves some of those outside VRAM to the CPU (moe_rows()).
