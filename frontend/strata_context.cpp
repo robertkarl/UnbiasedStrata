@@ -23,6 +23,7 @@
 #include "ggml-backend.h"
 #include "mtmd.h"
 #include "mtmd-helper.h"
+#include "reasoning-budget.h"
 
 #include <algorithm>
 #include <atomic>
@@ -45,6 +46,11 @@ constexpr int ENGINE_POLL_MS = 20;
 // the engine keeps this many context slots back; a prompt plus max_new may not reach the context (UnbiasedStrata 1,
 // REGINA-112: every request without max_tokens got a 500 until the front end counted it)
 constexpr int ENGINE_CONTEXT_RESERVE = 8;
+
+// what closes the thinking at its budget when neither the request (reasoning_budget_message) nor the server
+// (--reasoning-budget-message) names a message: a short wrap-up before the model's end-of-thinking tag (the Python
+// server's #123 wrap-up, which the old front end carried too)
+const char * const REASONING_WRAP_UP = "\n\nI have thought about this long enough; time to give my answer.\n";
 
 // mirrors server_slot in server-context.cpp, for the one slot the engine is
 struct Slot {
@@ -70,13 +76,32 @@ struct Slot {
     std::string images_path; // the request's picture rows for GENI (step 8); unlinked when the slot is released
     std::vector<uint64_t> image_keys; // one per picture, for img_keys= on the GENI line (0: none)
 
+    // The thinking budget (reasoning_budget_tokens): llama.cpp's budget sampler tracks the thinking token by token,
+    // as llama-server's does, but the engine samples in its own process, so the budget is enforced here: at the
+    // budget the engine is stopped and a new request continues from the prompt, what was generated and the forced
+    // close, which the engine finds in its cache (nothing is read again).
+    llama_sampler *      rbudget = nullptr;
+    std::vector<int32_t> ids;              // the prompt as sent: the continuation's prefix
+    llama_tokens         produced;         // every token of the reply so far, the forced close included
+    bool                 budget_stop = false; // STOP sent for the budget: drain to DONE, then continue
+    bool                 forcing     = false; // the forced close is being fed through on_token
+    long long            segment_prompt = 0;  // the prompt size of the running request (DONE's check)
+    int                  segments = 0;        // requests sent for this reply
+
     bool active() const { return task != nullptr; }
 
     void release() {
         if (!images_path.empty()) {
             ::unlink(images_path.c_str());
         }
+        if (rbudget != nullptr) {
+            llama_sampler_free(rbudget);
+        }
         *this = Slot{};
+    }
+
+    common_reasoning_budget_state budget_state() const {
+        return rbudget != nullptr ? common_reasoning_budget_get_state(rbudget) : REASONING_BUDGET_DONE;
     }
 
     bool has_budget() const {
@@ -341,6 +366,21 @@ struct strata_context_impl {
                     t.id, t.params.sampling.grammar.grammar.size());
         }
 
+        arm_budget(t);
+        slot.ids            = ids;
+        slot.segment_prompt = n_prompt;
+        slot.stats.update_prompt_start();
+
+        if (slot.budget_state() == REASONING_BUDGET_FORCING) {
+            // a budget of 0 on a prompt that opens the thinking: close it before the engine generates anything
+            if (t.params.stream) {
+                send_partial_response(completion_token_output{}, /* is_progress */ false, /* is_begin */ true);
+            }
+            slot.started = true;
+            continue_after_budget();
+            return;
+        }
+
         const std::string header = gen_header(t, slot.n_predict, slot.images_path, slot.image_keys);
         if (!engine.send_request(header, ids)) {
             send_error(t, "the engine is not running", ERROR_TYPE_UNAVAILABLE);
@@ -348,13 +388,80 @@ struct strata_context_impl {
             return;
         }
         slot.started = true;
-        slot.stats.update_prompt_start();
+        slot.segments = 1;
         SRV_INF("task %d: %s prompt=%d n_predict=%d\n", t.id, header.c_str(), n_prompt, slot.n_predict);
 
         if (t.params.stream) {
             // the HTTP side sends the 200 and the stream headers on this, before the first token
             send_partial_response(completion_token_output{}, /* is_progress */ false, /* is_begin */ true);
         }
+    }
+
+    // the thinking budget for this request, when it has one (mirrors common_sampler_init's reasoning budget sampler):
+    // the sampler starts from the generation prompt, so a template that opens the thinking starts it counting. A
+    // request with pictures is not budgeted: its continuation would have to carry the pictures again. (With --mmproj
+    // every request's tokens are multimodal; one without pictures has no image keys and text ids, and is budgeted.)
+    void arm_budget(const server_task & t) {
+        const auto & s = t.params.sampling;
+        if (!slot.image_keys.empty() || s.reasoning_budget_tokens < 0 || s.reasoning_budget_start.empty() ||
+            s.reasoning_budget_end.empty()) {
+            return;
+        }
+        const llama_tokens & forced = s.reasoning_budget_forced.empty() ? s.reasoning_budget_end.front() : s.reasoning_budget_forced;
+        slot.rbudget = common_reasoning_budget_init(vocab, {s.reasoning_budget_start}, s.reasoning_budget_end, forced,
+                                                    s.reasoning_budget_tokens);
+        if (!s.generation_prompt.empty()) {
+            const llama_tokens gp = common_tokenize(vocab, s.generation_prompt, false, true);
+            for (size_t i = 0; i < gp.size(); ++i) {
+                const std::string piece = common_token_to_piece(vocab, gp[i], true);
+                if (i == 0 && !piece.empty() && std::isspace((unsigned char) piece[0]) &&
+                    !std::isspace((unsigned char) s.generation_prompt[0])) {
+                    continue; // a tokenizer's space before the first special token, as common_sampler_init skips it
+                }
+                llama_sampler_accept(slot.rbudget, gp[i]);
+            }
+        }
+        SRV_INF("task %d: thinking budget %d tokens (%s)\n", t.id, s.reasoning_budget_tokens,
+                slot.budget_state() == REASONING_BUDGET_COUNTING ? "counting from the prompt" : "waiting for the thinking");
+    }
+
+    // The thinking reached its budget and the engine's request has ended: the forced close (message + end tag) goes
+    // through on_token as the reply's next tokens, then a new request continues from everything so far.
+    void continue_after_budget() {
+        const server_task & t = *slot.task;
+        slot.budget_stop = false;
+        slot.forcing     = true;
+        const llama_tokens & forced = t.params.sampling.reasoning_budget_forced.empty()
+            ? t.params.sampling.reasoning_budget_end.front() : t.params.sampling.reasoning_budget_forced;
+        for (const llama_token tok : forced) {
+            if (!slot.has_next_token) {
+                break;
+            }
+            on_token(tok);
+        }
+        slot.forcing = false;
+        slot.stop_sent = false;
+        const long long left = (long long) slot.n_predict - (long long) slot.stats.n_gen;
+        if (!slot.has_next_token || left <= 0) {
+            if (slot.stop == STOP_TYPE_NONE) {
+                slot.stop = STOP_TYPE_LIMIT;
+            }
+            send_final_response();
+            finish_slot();
+            return;
+        }
+        std::vector<int32_t> ids = slot.ids;
+        ids.insert(ids.end(), slot.produced.begin(), slot.produced.end());
+        const std::string header = gen_header(t, (int32_t) left);
+        if (!engine.send_request(header, ids)) {
+            send_error(t, "the engine is not running", ERROR_TYPE_UNAVAILABLE);
+            finish_slot();
+            return;
+        }
+        slot.segment_prompt = (long long) ids.size();
+        slot.segments++;
+        SRV_INF("task %d: thinking budget reached after %lld tokens; continuing with %s prompt=%zu\n",
+                t.id, (long long) slot.stats.n_gen, header.c_str(), ids.size());
     }
 
     // `GEN <max_new> key=value...` from the request's sampling parameters. Absent keys mean greedy to the engine
@@ -663,7 +770,7 @@ struct strata_context_impl {
     void handle_line(const EngineLine & line) {
         switch (line.kind) {
             case EngineLine::TOKEN:
-                if (!slot.cancelled && slot.has_next_token) {
+                if (!slot.cancelled && slot.has_next_token && !slot.budget_stop) {
                     on_token(line.token);
                 }
                 break;
@@ -731,6 +838,10 @@ struct strata_context_impl {
 
         const std::string token_str = result.text_to_send;
         slot.generated_text += token_str;
+        slot.produced.push_back(tok);
+        if (slot.rbudget != nullptr) {
+            llama_sampler_accept(slot.rbudget, tok);
+        }
         if (slot.task->params.return_tokens) {
             slot.generated_tokens.push_back(tok);
         }
@@ -775,9 +886,15 @@ struct strata_context_impl {
             slot.has_next_token = false;
         }
 
-        // a stop the engine does not know about (stop string, our limit): tell it, keep draining to its DONE
-        if (!slot.has_next_token && slot.stop != STOP_TYPE_EOS && !slot.stop_sent) {
+        // a stop the engine does not know about (stop string, our limit): tell it, keep draining to its DONE. Not while
+        // the forced close is fed: no engine request is running then.
+        if (!slot.has_next_token && slot.stop != STOP_TYPE_EOS && !slot.stop_sent && !slot.forcing) {
             slot.stop_sent = true;
+            engine.stop();
+        }
+        // the thinking reached its budget: end this request; on its DONE the forced close and a continuation follow
+        if (slot.has_next_token && !slot.forcing && !slot.budget_stop && slot.budget_state() == REASONING_BUDGET_FORCING) {
+            slot.budget_stop = true;
             engine.stop();
         }
     }
@@ -791,9 +908,9 @@ struct strata_context_impl {
         SRV_INF("task %d: DONE produced=%lld prompt=%lld prompt_ms=%.1f decode_ms=%.1f finish=%s drafts=%lld/%lld reused=%lld\n",
                 t.id, d.produced, d.prompt_n, d.prompt_ms, d.decode_ms, d.finish.c_str(), d.draft_accepted, d.draft_offered, d.reused);
 
-        if (d.prompt_n != (long long) t.n_tokens()) {
+        if (d.prompt_n != slot.segment_prompt) {
             // the engine answered for another prompt: never pass that off as this request's reply
-            SRV_ERR("task %d: engine prompt size mismatch: sent %d, engine reports %lld; refusing the response\n", t.id, t.n_tokens(), d.prompt_n);
+            SRV_ERR("task %d: engine prompt size mismatch: sent %lld, engine reports %lld; refusing the response\n", t.id, slot.segment_prompt, d.prompt_n);
             if (!slot.cancelled) {
                 send_error(t, "engine response prompt size mismatch", ERROR_TYPE_SERVER);
             }
@@ -801,10 +918,13 @@ struct strata_context_impl {
             return;
         }
 
-        slot.stats.n_prompt_cached    = (uint64_t) std::max<long long>(d.reused, (long long) slot.stats.n_prompt_cached);
-        slot.stats.n_prompt_processed = (uint64_t) std::max<long long>(0, d.prompt_n - (long long) slot.stats.n_prompt_cached);
-        slot.stats.n_draft_tokens     = (uint64_t) d.draft_offered;
-        slot.stats.n_draft_accepted   = (uint64_t) d.draft_accepted;
+        if (slot.segments <= 1) {
+            // the prompt is the first request's; a continuation's prompt is the reply so far, found in the cache
+            slot.stats.n_prompt_cached    = (uint64_t) std::max<long long>(d.reused, (long long) slot.stats.n_prompt_cached);
+            slot.stats.n_prompt_processed = (uint64_t) std::max<long long>(0, d.prompt_n - (long long) slot.stats.n_prompt_cached);
+        }
+        slot.stats.n_draft_tokens     += (uint64_t) d.draft_offered;
+        slot.stats.n_draft_accepted   += (uint64_t) d.draft_accepted;
         if (slot.stats.t_prompt_last == 0) {
             slot.stats.update_prompt_last();
         }
@@ -814,6 +934,10 @@ struct strata_context_impl {
 
         if (slot.cancelled) {
             finish_slot();
+            return;
+        }
+        if (slot.budget_stop && d.finish != "nonfinite") {
+            continue_after_budget();
             return;
         }
         if (d.finish == "nonfinite") {
@@ -1320,8 +1444,9 @@ bool strata_context::load(common_params & params, std::string & err) {
             /* allow_audio           */ false,
             /* allow_video           */ false,
             /* enable_thinking       */ enable_thinking,
-            /* reasoning_budget      */ -1, // needs a sampler the engine does not expose
-            /* reasoning_budget_msg  */ std::string(),
+            /* reasoning_budget      */ params.sampling.reasoning_budget_tokens, // enforced by Slot::rbudget
+            /* reasoning_budget_msg  */ params.sampling.reasoning_budget_message.empty()
+                                            ? std::string(REASONING_WRAP_UP) : params.sampling.reasoning_budget_message,
             /* media_path            */ params.media_path,
             /* force_pure_content    */ params.force_pure_content_parser
         };

@@ -67,5 +67,16 @@ if exp:
 print(json.dumps(res)); sys.exit(0 if res.get("ok", True) else 1)
 PY
 
+note "== 6. thinking budget: reasoning_budget_tokens caps the thinking, which closes with the wrap-up; the answer follows"
+post "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"What is 17 * 23? Answer with the number only.\"}],\"max_tokens\":1024,\"reasoning_budget_tokens\":16,$SAMP}" > "$OUT/budget.json"
+python3 - "$OUT/budget.json" <<'PY' || fail=1
+import json, sys; d = json.load(open(sys.argv[1])); m = d["choices"][0]["message"]
+content, reasoning = m.get("content") or "", m.get("reasoning_content") or ""
+ok = ("391" in content and d["choices"][0]["finish_reason"] == "stop" and "</think>" not in content
+      and "time to give my answer" in reasoning)
+print(json.dumps({"content": content[:80], "reasoning_tail": reasoning[-60:], "completion_tokens": d["usage"]["completion_tokens"], "ok": ok}))
+sys.exit(0 if ok else 1)
+PY
+
 note "== /health"; curl -s -m 10 "$URL/health"; echo
 [ $fail = 0 ] && echo "ACCEPTANCE_OK $MODEL" || echo "ACCEPTANCE_FAIL $MODEL"; exit $fail
