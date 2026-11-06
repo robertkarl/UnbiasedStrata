@@ -877,7 +877,7 @@ int serve(Session& ss) {
         const strata::poly::Stats& now = engine.stats();
         // the cache's share of the experts looked up while answering: a prompt batch's go through VRAM either way
         const long long hits = now.gpu_experts - before.gpu_experts;
-        const long long misses = now.cpu_experts - before.cpu_experts;
+        const long long misses = (now.cpu_experts - before.cpu_experts) + (now.staged_experts - before.staged_experts);
         std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld 0 0 0.0 %lld 0\n", (long long) r.produced, n,
                     r.prompt_ms, r.decode_ms, r.finish, (long long) r.guessed_right, (long long) r.guessed,
                     (long long) r.resume, hits, hits + misses, (long long) r.read);
@@ -953,7 +953,7 @@ int once(Session& ss, const std::vector<int32_t>& ids, const Pictures& pictures,
         [](int64_t, int64_t, double, bool) {});
     std::printf("%s\n", out.c_str());
     const strata::poly::Stats& st = ss.engine.stats();
-    const double experts = (double) std::max<int64_t>(st.gpu_experts + st.cpu_experts, 1);
+    const double experts = (double) std::max<int64_t>(st.gpu_experts + st.cpu_experts + st.staged_experts, 1);
     std::fprintf(stderr,
                  "prompt %lld tokens %.1f tok/s, generated %lld tokens %.2f tok/s (%s); experts from VRAM %.1f%%, "
                  "CPU experts %.1f ms/token, router wait %.1f ms/token, %lld experts swapped into VRAM, "
@@ -1063,6 +1063,11 @@ void usage() {
                  "                         of them are copied after the layer has routed\n"
                  "  --stage-ahead N        from N tokens, a batch copies those experts before it routes (default 1024,\n"
                  "                         0 = never)\n"
+                 "  --stage-rows N         from N tokens a call copies the experts outside the cache to the card\n"
+                 "                         (--stage-mib) and computes them there, the CPU taking its share meanwhile;\n"
+                 "                         under N the CPU computes all of them (default 32; 1 = also while an\n"
+                 "                         answer is written, which keeps the card and the bus busy instead of the CPU)\n"
+                 "  --stage-overlap 0|1    copy a single staging round under the cached experts' kernels (default 0)\n"
                  "  --cpu-share F          under that, the share of those experts the CPU computes meanwhile, the\n"
                  "                         ones the fewest tokens chose (default: as the times say; 0 = none)\n"
                  "  --prompt-cache N       checkpoints kept of a conversation, about 150 MB of RAM each (default 6;\n"
@@ -1162,6 +1167,8 @@ int main(int argc, char** argv) {
         else if (a == "--prompt-batch") o.prompt_batch = std::atoi(val());
         else if (a == "--stage-mib") o.stage_mib = std::atoi(val());
         else if (a == "--stage-ahead") o.stage_ahead = std::atoi(val());
+        else if (a == "--stage-rows") o.stage_rows = std::atoi(val());
+        else if (a == "--stage-overlap") o.stage_overlap = std::atoi(val()) != 0;
         else if (a == "--cpu-share") o.cpu_share = (float) std::atof(val());
         else if (a == "--prompt-cache") cache.o.checkpoints = std::atoi(val());
         else if (a == "--prompt-cache-every") cache.o.every = std::atoll(val());

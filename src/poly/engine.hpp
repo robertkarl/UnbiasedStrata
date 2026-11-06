@@ -61,6 +61,11 @@ struct Options {
     float cpu_share = -1;         ///< of the experts outside VRAM that such a call routes to, the share the CPU
                                   ///< computes while the others are copied: the ones the fewest tokens chose;
                                   ///< below 0: as the two took the time between them; 0: none
+    int stage_rows = 32;          ///< from this many tokens (kStageRows) a call takes its routed experts as a prompt batch
+                                  ///< (moe_rows(): the cached ones by MMQ, the others through the staging buffer
+                                  ///< with the CPU's share computed meanwhile); under it the CPU computes every
+                                  ///< expert outside VRAM (moe()).  1: an answer's windows stream their misses too
+    bool stage_overlap = false;   ///< opt-in: copy a single staging round under the cached experts' kernels
     int expert_swaps = 64;        ///< experts on their way into the cache at a time while an answer is written, each
                                   ///< to the slot of one the answer uses less; 0: the cache stays as it was loaded
     bool stay_near = true;        ///< with several NUMA nodes, keep the CPU threads on the one that holds the experts
@@ -134,6 +139,8 @@ struct Layer {
 /// (gpu_experts, cpu_experts), and in a prompt batch from the cache or the staging buffer (batch_*).
 struct Stats {
     int64_t tokens = 0, gpu_experts = 0, cpu_experts = 0, batch_cached = 0, batch_staged = 0;
+    int64_t staged_experts = 0;    ///< an answer's experts outside VRAM copied to the card and computed there
+                                   ///< (--stage-rows): misses, like cpu_experts
     int64_t swapped_experts = 0;   ///< experts that took a cached one's slot (follow())
     int64_t tail_experts = 0;      ///< a token's experts left out by Options::tail_skip
     double cpu_ms = 0, route_wait_ms = 0;
@@ -697,6 +704,7 @@ protected:
     std::vector<uint8_t> sent_;
     // A call that copies only the experts it routes to leaves some of those outside VRAM to the CPU (moe_rows()).
     std::vector<uint8_t> on_cpu_;  ///< per expert of the layer: the CPU's
+    std::vector<uint8_t> left_out_; ///< per expert of the layer: left out by Options::tail_skip
     std::vector<int32_t> spare_;   ///< the layer's routed experts outside VRAM, the fewest tokens' first
     std::vector<CpuExpert> host_;  ///< their uses, by token
     double share_[5] = {0.25, 0.25, 0.25, 0.25, 0.25};   ///< the CPU's share of spare_, by the call's tokens:
