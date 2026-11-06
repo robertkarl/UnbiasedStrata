@@ -66,7 +66,7 @@ struct Options {
                                   ///< with the CPU's share computed meanwhile); under it the CPU computes every
                                   ///< expert outside VRAM (moe()).  1: an answer's windows stream their misses too
     bool stage_overlap = false;   ///< opt-in: copy a single staging round under the cached experts' kernels
-    bool mmq_tab = true;          ///< a layer's cached experts in launches of up to Mmq::kTab wherever their slots lie,
+    bool mmq_tab = false;         ///< opt-in: a layer's cached experts in launches of up to Mmq::kTab wherever their slots lie,
                                   ///< when that is fewer launches than one per run of adjacent slots
     int expert_swaps = 64;        ///< experts on their way into the cache at a time while an answer is written, each
                                   ///< to the slot of one the answer uses less; 0: the cache stays as it was loaded

@@ -1069,7 +1069,7 @@ void usage() {
                  "                         answer is written, which keeps the card and the bus busy instead of the CPU)\n"
                  "  --stage-overlap 0|1    copy a single staging round under the cached experts' kernels (default 0)\n"
                  "  --mmq-tab 0|1          a layer's cached experts in launches of up to 16 wherever their slots lie,\n"
-                 "                         when that is fewer launches than one per run of adjacent slots (1)\n"
+                 "                         when that is fewer launches than one per run of adjacent slots (default 0)\n"
                  "  --cpu-share F          under that, the share of those experts the CPU computes meanwhile, the\n"
                  "                         ones the fewest tokens chose (default: as the times say; 0 = none)\n"
                  "  --prompt-cache N       checkpoints kept of a conversation, about 150 MB of RAM each (default 6;\n"
