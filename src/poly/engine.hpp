@@ -65,7 +65,7 @@ struct Options {
                                   ///< (moe_rows(): the cached ones by MMQ, the others through the staging buffer
                                   ///< with the CPU's share computed meanwhile); under it the CPU computes every
                                   ///< expert outside VRAM (moe()).  1: an answer's windows stream their misses too
-    bool stage_overlap = true;    ///< a single staging round is copied on the upload stream, under the cached experts' kernels
+    bool stage_overlap = false;   ///< opt-in: copy a single staging round under the cached experts' kernels
     int expert_swaps = 64;        ///< experts on their way into the cache at a time while an answer is written, each
                                   ///< to the slot of one the answer uses less; 0: the cache stays as it was loaded
     bool stay_near = true;        ///< with several NUMA nodes, keep the CPU threads on the one that holds the experts
