@@ -2282,6 +2282,14 @@ if(STRATA_FRONTEND AND STRATA_NATIVE_EXPERTS)
   target_include_directories(unbiased-strata PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/frontend)
   target_link_libraries(unbiased-strata PRIVATE strata_llama_server)
   target_compile_features(unbiased-strata PRIVATE cxx_std_20)
+  find_path(ZSTD_INCLUDE_DIR zstd.h)
+  find_library(ZSTD_LIBRARY zstd)
+  if(ZSTD_INCLUDE_DIR AND ZSTD_LIBRARY)
+    target_sources(unbiased-strata PRIVATE frontend/hy4_vocab.cpp src/artifact/strata_reader.cpp)
+    target_include_directories(unbiased-strata PRIVATE include ${ZSTD_INCLUDE_DIR})
+    target_link_libraries(unbiased-strata PRIVATE ${ZSTD_LIBRARY})
+    target_compile_definitions(unbiased-strata PRIVATE STRATA_HY4_VOCAB)
+  endif()
 
   # The engine adapter against the fake engine (frontend/tests/fake-engine.py): no GPU, no model, no llama.cpp.
   # `make test` builds and runs it, then frontend/tests/e2e.sh against the binary above.

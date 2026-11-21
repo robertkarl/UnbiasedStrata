@@ -46,10 +46,10 @@ void signal_handler(int signal) {
 
 void usage() {
     std::fprintf(stderr,
-        "usage: unbiased-strata --engine <strata|strata-poly|path> -m <model.gguf> [llama-server options] -- <engine options>\n"
+        "usage: unbiased-strata --engine <strata|strata-poly|strata-hy4|path> -m <model> [llama-server options] -- <engine options>\n"
         "\n"
         "  --engine PATH          the engine binary; a bare name is looked up beside this program\n"
-        "  -m, --model FILE       the GGUF the vocabulary and chat template are read from (no tensors are loaded)\n"
+        "  -m, --model FILE       vocabulary and chat template from a GGUF or Hy4 .strata text checkpoint\n"
         "  --host, --port, --api-key, --threads-http, --temp, --top-k, --top-p, --min-p, --reasoning-format,\n"
         "  --chat-template-kwargs, --alias ...   llama-server options (see llama-server --help)\n"
         "  --mmproj FILE          the model's vision projector: image_url parts are encoded in this process and\n"
@@ -151,7 +151,7 @@ int main(int argc, char ** argv) {
     // encoder runs on the CPU unless --mmproj-gpu asks for the card (upstream PolyStrata's choice as well)
     params.mmproj_use_gpu = mmproj_gpu;
     if (params.model.path.empty()) {
-        std::fprintf(stderr, "unbiased-strata: -m <model.gguf> is required (the vocabulary and chat template come from it)\n");
+        std::fprintf(stderr, "unbiased-strata: -m <model> is required (the vocabulary and chat template come from it)\n");
         return 2;
     }
     auto model_name = params.model.get_name();
