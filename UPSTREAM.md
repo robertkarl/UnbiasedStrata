@@ -4,6 +4,7 @@
 
 | What | Where | Version |
 | --- | --- | --- |
+| Hy4-Flash text runner, S-quant codecs and native container reader | [Niko1221/Strata](https://github.com/Niko1221/Strata/tree/6e38f588a646c0ee6948a74afbe670eb75896106/engine/src/hy4flash) | `6e38f588a646c0ee6948a74afbe670eb75896106`. Build changes, file mapping and measurements are in [docs/HY4.md](docs/HY4.md). |
 | Engines (`strata`, `strata-poly`), tools, docs | https://github.com/VecSzn/PolyStrata | tag `v0.1.45-poly.1`, commit `d0cd84dc6bd009d1d9e2191e4e28cc76b80f1ee3` |
 | ggml, llama, common, mtmd, cpp-httplib | https://github.com/robertkarl/llama.cpp, branch `UnbiasedStrata`, as the submodule `third_party/llama.cpp` | commit `385445fad49e42fa718b5e1f71668f35b7a08559`: ggml-org `3cf03257f219afbe7334045ff7c6a06ac68c627d` (the commit upstream pins) plus the six parser commits below |
 | DeepSeek-V4.1 engine (`strata-dsv41`: `src/dsv41`, `include/strata/dsv41`, `tests/dsv41`, `tools/dsv41`, `data/dsv41`, `tools/trellis/tqenc.*`), the trellis and `iq*x_rows` CPU kernels it needs | https://github.com/Niko1221/Strata | tag `v0.2.4`, commit `96ca4383` (2026-10-24); see "DeepSeek-V4.1 engine" below |
