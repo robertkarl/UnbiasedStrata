@@ -176,5 +176,13 @@ t=$(curl -s "$URL/tokenize" -H 'content-type: application/json' -d '{"content":"
 d=$(curl -s "$URL/detokenize" -H 'content-type: application/json' -d "{\"tokens\":$t}" | j 'd["content"]')
 check $([ "$d" = "Hello, world!" ] && echo 0 || echo 1) "tokenize/detokenize round trip: $t"
 
+# All readers and the engine must be released once on an orderly shutdown.
+kill "$PID" "$SLOW_PID" "$TPL_PID"
+for server_pid in "$PID" "$SLOW_PID" "$TPL_PID"; do
+    wait "$server_pid"
+    check $? "server $server_pid exits cleanly on SIGTERM"
+done
+trap 'rm -f "$LOG" "$SLOW_LOG" "$TPL_LOG" "$BIG"' EXIT
+
 if [ $fail = 0 ]; then echo "e2e: all checks passed"; else echo "--- server log"; tail -40 "$LOG"; echo "--- slow server log"; tail -20 "$SLOW_LOG"; echo "--- template server log"; tail -20 "$TPL_LOG"; fi
 exit $fail

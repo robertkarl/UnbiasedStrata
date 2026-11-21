@@ -31,16 +31,12 @@
 
 namespace {
 
-std::function<void(int)> shutdown_handler;
-std::atomic_flag is_terminating = ATOMIC_FLAG_INIT;
+std::atomic<bool> shutdown_requested{false};
+static_assert(std::atomic<bool>::is_always_lock_free);
 
-void signal_handler(int signal) {
-    if (is_terminating.test_and_set()) {
-        std::fprintf(stderr, "Received second interrupt, terminating immediately.\n");
-        std::exit(1);
-    }
-    if (shutdown_handler) {
-        shutdown_handler(signal);
+void signal_handler(int) {
+    if (shutdown_requested.exchange(true)) {
+        std::_Exit(1);
     }
 }
 
@@ -184,6 +180,10 @@ int main(int argc, char ** argv) {
         SRV_INF("%s", "cleaning up before exit...\n");
         server_stream_session_manager_stop();
         ctx_http.stop();
+        ctx_server.stop_loop();
+        if (ctx_http.thread.joinable()) {
+            ctx_http.thread.join();
+        }
         ctx_server.terminate();
         llama_backend_free();
     };
@@ -197,17 +197,11 @@ int main(int argc, char ** argv) {
     if (!ctx_server.load(params, err)) {
         SRV_ERR("%s\n", err.c_str());
         clean_up();
-        if (ctx_http.thread.joinable()) {
-            ctx_http.thread.join();
-        }
         return 1;
     }
     ctx_http.is_ready.store(true);
     SRV_INF("listening on %s, context %lld tokens\n", ctx_http.listening_address.c_str(), ctx_server.n_ctx());
 
-    shutdown_handler = [&](int) {
-        ctx_server.terminate();
-    };
     struct sigaction sigint_action;
     sigint_action.sa_handler = signal_handler;
     sigemptyset(&sigint_action.sa_mask);
@@ -222,23 +216,22 @@ int main(int argc, char ** argv) {
     std::thread supervisor([&]() {
         std::string why;
         while (!stop_supervisor) {
-            if (ctx_server.engine_exited(why)) {
+            if (shutdown_requested.load()) {
+                ctx_server.stop_loop();
+            } else if (ctx_server.engine_exited(why)) {
                 SRV_ERR("%s; shutting down so the service manager can restart\n", why.c_str());
                 engine_died = true;
-                ctx_server.terminate();
-                return;
+                shutdown_requested = true;
+                ctx_server.stop_loop();
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     });
 
-    ctx_server.start_loop(); // blocks until terminate()
+    ctx_server.start_loop(); // blocks until stop_loop()
 
     stop_supervisor = true;
     supervisor.join();
     clean_up();
-    if (ctx_http.thread.joinable()) {
-        ctx_http.thread.join();
-    }
     return engine_died ? 1 : 0;
 }

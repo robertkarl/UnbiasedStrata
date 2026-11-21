@@ -35,8 +35,9 @@ struct strata_context {
     // --picture-cache: how many pictures' encoded rows are kept for the turns that resend them (0: none); before load()
     void set_picture_cache(size_t entries, size_t bytes);
 
-    // Blocks the calling thread running the task loop until terminate().
+    // Stop the task loop and wake pending HTTP readers before joining the HTTP thread.
     void start_loop();
+    void stop_loop();
     void terminate();
 
     // Non-blocking: true once the engine process has exited; `why` names the signal or exit code.

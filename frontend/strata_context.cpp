@@ -1424,9 +1424,12 @@ void strata_context::start_loop() {
     impl->queue_tasks.start_loop();
 }
 
-void strata_context::terminate() {
+void strata_context::stop_loop() {
     impl->queue_tasks.terminate();
     impl->queue_results.terminate();
+}
+
+void strata_context::terminate() {
     impl->engine.quit();
     if (impl->model) {
         llama_model_free(impl->model);
