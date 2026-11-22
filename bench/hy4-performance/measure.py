@@ -71,6 +71,7 @@ def main():
         parser.add_argument("--" + key, type=Path, required=True)
     parser.add_argument("--prompt-ids", type=Path, help="reuse an exact saved token sequence instead of generating the inventory fixture")
     parser.add_argument("--gpus", required=True, help="ordered physical NVIDIA UUIDs, comma separated")
+    parser.add_argument("--draft", choices=("off", "dfly2"), default="dfly2")
     parser.add_argument("--chunk", type=int, default=0, help="0 selects the engine default")
     parser.add_argument("--context", type=int, default=4096)
     parser.add_argument("--prompt", type=int, default=2048)
@@ -95,7 +96,7 @@ def main():
     env = dict(os.environ, CUDA_VISIBLE_DEVICES=opt.gpus, CUDA_DEVICE_ORDER="PCI_BUS_ID")
     env["LD_LIBRARY_PATH"] = str(opt.engine.resolve().parent) + ":" + env.get("LD_LIBRARY_PATH", "")
     argv = [str(opt.engine), "--serve", "--model", str(opt.model), "--engram", str(opt.engram),
-            "--ctx", str(opt.context), "--chunk", str(opt.chunk), "--draft", "dfly2", "--session-reuse", "0",
+            "--ctx", str(opt.context), "--chunk", str(opt.chunk), "--draft", opt.draft, "--session-reuse", "0",
             "--gpus", ",".join(str(i) for i in range(len(opt.gpus.split(","))))]
     manifest = dict(utc=datetime.now(timezone.utc).isoformat(), host=platform.node(), argv=argv,
                     devices=opt.gpus.split(","), model=opt.model.name, temperature=opt.temperature,
