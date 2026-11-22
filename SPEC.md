@@ -19,3 +19,9 @@ The measured results, hardware, checkpoint coverage and reproduction commands ar
 - Record every stock-engine attempt on the performance branch. Include the binary, model, device order, context, prompt length, output length, sampling, and placement.
 - Compare prompt processing and decode separately with the published SQ-64 dual-V100 reference of 1,068 and 41.8 tokens/s at a 4,096-token context. The corresponding 80% floors are 854.4 and 33.44 tokens/s. Report faster results as exceeding the reference.
 - Verify a qualifying configuration on the same two-card host using three measured requests after warm-up, fresh 2,048-token prompts, and approximately 2,048 generated tokens per request. Report actual output lengths, hardware differences and available upstream methodology.
+
+## UnbiasedStrata CUDA parity with stock SQ-64
+
+- Use the released Strata CUDA binary as the oracle on the same RTX 4090 primary and RTX A6000 peer. Compare the checkpoint, Q8 Engram, prompt IDs, context, DFly2, sampling, prefix reuse and expert placement.
+- Require at least 80% of stock median prefill and decode in the fork's native runner and through the ordinary HTTP server on the 2,048-token prompt. Warm each process and measure three requests of approximately 2,048 generated tokens. Check the matched 4,750-token prompt at 131,072 context capacity.
+- Compare full-vocabulary CUDA logits on short prompts and past the sparse-index boundary using the existing KL, perplexity and top-1 thresholds. Check HTTP chat and tokenizer behavior. Record failed attempts and actual output lengths alongside the upstream results.

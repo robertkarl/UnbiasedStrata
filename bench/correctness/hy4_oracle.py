@@ -82,7 +82,7 @@ def serve_trials(exe, args, ids, log_path, count=3):
                 else:
                     raise RuntimeError(f"engine exited during generation (see {log.name})")
             p.stdin.write("QUIT\n")
-            p.stdin.flush()
+            p.stdin.close()
             if p.wait(timeout=60) != 0:
                 raise RuntimeError(f"engine failed at shutdown (see {log.name})")
         finally:

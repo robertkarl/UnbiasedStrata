@@ -17,13 +17,27 @@ Choose one text pack and put the shared `Hy4-Flash-Engram-Q8.strata` next to it 
 ```sh
 build-frontend/bin/unbiased-strata --engine build-hy4/bin/strata-hy4 \
     -m /models/hy4/Hy4-Flash-SQ-64.strata --jinja --alias hy4 --port 8080 \
-    -- --ctx 4096 --chunk 128 --draft auto
+    -- --ctx 4096 --draft auto
 
 curl -sS http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/json' \
     -d '{"model":"hy4","messages":[{"role":"user","content":"What is 2 plus 2?"}],"reasoning_effort":"none","temperature":0,"max_tokens":32}'
 ```
 
 Use `--engram /path/to/Hy4-Flash-Engram-Q8.strata` after the separator if the table is elsewhere. `--draft auto` enables the embedded DFly2 drafter when it can initialize. `--draft off` selects plain decode. The optional vision shard and HTTP image input require a different engine protocol from the fork’s existing image projector adapter.
+
+### Serving SQ-64 on a 4090 and A6000
+
+Build both CUDA architectures with `make hy4 'CUDA_ARCHS=86;89'`. Use the UUIDs printed by `nvidia-smi -L` to put the 4090 first and A6000 second. This launch uses the stock benchmark's sampler and gives the upstream planner control of the prefill chunk.
+
+```sh
+CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES="$GPU_4090_UUID,$GPU_A6000_UUID" \
+  build-frontend/bin/unbiased-strata --engine build-hy4/bin/strata-hy4 \
+  -m /models/hy4/Hy4-Flash-SQ-64.strata --alias hy4 --jinja --port 8080 \
+  --temp 0.9 --top-k 64 --top-p 1 --min-p 0 \
+  -- --gpus 0,1 --ctx 4096 --draft dfly2 --session-reuse 0
+```
+
+The loader should report all 20,992 experts in VRAM and zero on the CPU for this pair. The SQ-128 pack leaves 43.56 GB of experts on the CPU. For the measured long-context configuration, use `--ctx 131072 --chunk 1024`. The [CUDA experiment log](../bench/hy4-performance/UNBIASEDSTRATA.md) records the throughput and numerical comparisons.
 
 ## Integration choice
 

@@ -335,10 +335,12 @@ struct strata_context_impl {
         } else {
             ids = t.tokens.get_text_tokens();
         }
-        const long long room = n_ctx - n_prompt - ENGINE_CONTEXT_RESERVE;
+        // Both Hy4 backends reserve one position in their native serve loop.
+        const int reserve = engine_is_hy4 ? 1 : ENGINE_CONTEXT_RESERVE;
+        const long long room = n_ctx - n_prompt - reserve;
         if (room <= 0) {
             send_error(t, string_format("the request exceeds the available context size: %d prompt tokens, context %lld (%d kept back)",
-                                        n_prompt, n_ctx, ENGINE_CONTEXT_RESERVE), ERROR_TYPE_EXCEED_CONTEXT_SIZE);
+                                        n_prompt, n_ctx, reserve), ERROR_TYPE_EXCEED_CONTEXT_SIZE);
             slot.release();
             return;
         }
