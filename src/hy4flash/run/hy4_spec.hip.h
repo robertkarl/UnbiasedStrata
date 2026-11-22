@@ -92,9 +92,9 @@ public:
         const int b = bucket(c);
         return cy[b] / cn[b];
     }
-    double tver(int m) const {  // verify ms for m tokens
-        if (tv[m] > 0) return tv[m];
-        const double base = tp > 0 ? tp : 46.0;
+    double tver(int m, bool seeded = false) const {  // verify ms for m tokens
+        if (!seeded && tv[m] > 0) return tv[m];
+        const double base = !seeded && tp > 0 ? tp : 46.0;
         return base * (5.1 + 0.127 * DM[m - 1]) / 7.13;
     }
     int choose_k(int K) const {
@@ -149,19 +149,19 @@ public:
         return h_arg[0];
     }
 
-    int choose_m(const TreeSpec& tr) const {
+    int choose_m(const TreeSpec& tr, bool seeded) const {
         if (!cfg.adaptive) return tr.M;
         if (cfg.cut >= 0) {
             int m = 1;
             while (m < tr.M && node_conf[m] > cfg.cut) ++m;
             return m;
         }
-        const double tpl = tp > 0 ? tp : 46.0;
+        const double tpl = !seeded && tp > 0 ? tp : 46.0;
         int best_m = 1;
         double bt = 1.0 / tpl, E = 0.0;
         for (int m = 2; m <= tr.M; ++m) {
             E += (double)node_reach[m - 1];
-            const double thr = (1.0 + E) / tver(m);
+            const double thr = (1.0 + E) / tver(m, seeded);
             if (thr > bt) { bt = thr; best_m = m; }
         }
         return best_m;
@@ -216,7 +216,15 @@ public:
         finish = "length";
         err.clear();
         const bool prob_mode = samp != nullptr && (!samp->greedy() || samp->penalties());
-        std::mt19937_64 local_rng(samp && samp->seed ? samp->seed : 0x57A7A123456789ABull);
+        const bool seeded = prob_mode && samp->has_seed;
+        if (seeded) {
+            // Match Metal: prior requests and measured timings cannot choose a seeded request's draft window.
+            for (int b = 0; b < 6; ++b) { cn[b] = 2.0; cy[b] = 2.0 * MID[b]; }
+            plain_left = 0;
+            win.clear();
+            P = 8;
+        }
+        std::mt19937_64 local_rng(samp && samp->has_seed ? samp->seed : 0x57A7A123456789ABull);
         if (prob_mode && !rng) rng = &local_rng;
         int fwd = (int)tok.size();
         auto push_emit = [&](int t) -> bool {
@@ -303,7 +311,7 @@ public:
             }
             S.t_draft += tdraft;
             S.drafted += (tr.M - 1);
-            int T = choose_m(tr);
+            int T = choose_m(tr, seeded);
             if (T > tr.M) T = tr.M;
             tr.M = T;
             const int Kp = T - 1;
@@ -317,7 +325,7 @@ public:
                 ++S.plain_after_draft;
                 fwd = a + 1;
                 ++S.hist[0];
-                note_iter((now_s() - ti0) * 1000.0, 1, true);
+                if (!seeded) note_iter((now_s() - ti0) * 1000.0, 1, true);
                 S.t_spec_total += (now_s() - ti0) * 1000.0;
                 ++S.spec_iters;
                 if (!push_emit(nx)) break;
@@ -470,7 +478,7 @@ public:
             fwd = std::min(fwd, (int)tok.size());
             const double itms = (now_s() - ti0) * 1000.0;
             S.t_spec_total += itms;
-            note_iter(itms, n + 1, true);
+            if (!seeded) note_iter(itms, n + 1, true);
             if (!alive) break;
         }
         made_out = made;

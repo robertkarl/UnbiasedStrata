@@ -20,6 +20,7 @@ struct SampleOpts {
     float rep = 1.f, freq = 0.f, pres = 0.f;
     int last_n = 64;
     uint64_t seed = 0;
+    bool has_seed = false;
     bool greedy() const { return temperature <= 0.f; }
     bool penalties() const { return rep != 1.f || freq != 0.f || pres != 0.f; }
 };
@@ -715,7 +716,7 @@ public:
         finish = "length";
         err.clear();
         const bool prob_mode = samp != nullptr && (!samp->greedy() || samp->penalties());
-        const bool det_seed = prob_mode && samp->seed != 0;
+        const bool det_seed = prob_mode && samp->has_seed;
         if (det_seed) {
             // Wall-clock-independent repeatability for seeded SpecInfer requests (same seed -> bit-identical token stream every time)
             for (int b = 0; b < 6; ++b) { cn[b] = 2.0; cy[b] = 2.0 * MID[b]; }
@@ -723,7 +724,7 @@ public:
             win.clear();
             P = 8;
         }
-        std::mt19937_64 local_rng(samp && samp->seed ? samp->seed : 0x57A7A123456789ABull);
+        std::mt19937_64 local_rng(samp && samp->has_seed ? samp->seed : 0x57A7A123456789ABull);
         if (prob_mode && !rng) rng = &local_rng;
         int fwd = (int) tok.size();
         d.snap_h(0);
@@ -802,7 +803,7 @@ public:
                 ++S.plain_after_draft;
                 fwd = a + 1;
                 ++S.hist[0];
-                note_iter((now_s() - ti0) * 1000.0, 1, true);
+                if (!det_seed) note_iter((now_s() - ti0) * 1000.0, 1, true);
                 S.t_spec_total += (now_s() - ti0) * 1000.0;
                 ++S.spec_iters;
                 if (!push_emit(nx)) break;

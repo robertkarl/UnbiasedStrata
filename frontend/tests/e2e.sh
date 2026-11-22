@@ -177,7 +177,16 @@ d=$(curl -s "$URL/detokenize" -H 'content-type: application/json' -d "{\"tokens\
 check $([ "$d" = "Hello, world!" ] && echo 0 || echo 1) "tokenize/detokenize round trip: $t"
 
 # All readers and the engine must be released once on an orderly shutdown.
+curl -s --max-time 15 "$SLOW_URL/completion" -H 'content-type: application/json' \
+    -d '{"prompt":"pending","n_predict":4000}' >/dev/null &
+pending_client=$!
+for i in $(seq 1 50); do
+    if curl -s "$SLOW_URL/health" | grep -q '"busy":true'; then break; fi
+    sleep 0.1
+done
+check $(curl -s "$SLOW_URL/health" | grep -q '"busy":true' && echo 0 || echo 1) "a completion is active during shutdown"
 kill "$PID" "$SLOW_PID" "$TPL_PID"
+wait "$pending_client" || true
 for server_pid in "$PID" "$SLOW_PID" "$TPL_PID"; do
     wait "$server_pid"
     check $? "server $server_pid exits cleanly on SIGTERM"

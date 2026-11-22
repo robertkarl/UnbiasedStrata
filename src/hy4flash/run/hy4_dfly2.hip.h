@@ -30,6 +30,7 @@ struct SampleOpts {
     float rep = 1.f, freq = 0.f, pres = 0.f;
     int last_n = 64;
     uint64_t seed = 0;
+    bool has_seed = false;
     bool greedy() const { return temperature <= 0.f; }
     bool penalties() const { return rep != 1.f || freq != 0.f || pres != 0.f; }
 };

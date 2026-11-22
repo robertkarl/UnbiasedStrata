@@ -1483,7 +1483,7 @@ int main(int argc, char** argv) {
         else if (a == "--top-p") cli_samp.top_p = (float) atof(nxt().c_str());
         else if (a == "--top-k") cli_samp.top_k = atoi(nxt().c_str());
         else if (a == "--min-p") cli_samp.min_p = (float) atof(nxt().c_str());
-        else if (a == "--seed") cli_samp.seed = (uint64_t) strtoull(nxt().c_str(), nullptr, 10);
+        else if (a == "--seed") { cli_samp.seed = (uint64_t) strtoull(nxt().c_str(), nullptr, 10); cli_samp.has_seed = true; }
         else if (a == "--ab") ab_rounds = atoi(nxt().c_str());
         else if (a == "--bench-m") bench_m = atoi(nxt().c_str());
         else if (a == "--par-m") par_m = atoi(nxt().c_str());
@@ -1710,7 +1710,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "[prefill] total %.2f s = %.1f ppts (engram wait %.2f s, gpu %.2f s)\n", t_pf, T0 / t_pf, r.t_engram_wait, r.gpu_total);
     const bool cli_prob = !cli_samp.greedy() || cli_samp.penalties();
     auto plain_gen = [&](std::vector<int>& ids_out, bool verbose) -> bool {  // plain decode (greedy or sampled) of `gen` tokens from prefilled state
-        std::mt19937_64 prng(cli_samp.seed ? cli_samp.seed : 0x57A7A123456789ABull);
+        std::mt19937_64 prng(cli_samp.has_seed ? cli_samp.seed : 0x57A7A123456789ABull);
         int next = 0;
         if (!cli_prob) {
             next = (int) (std::max_element(hl.end() - V, hl.end()) - (hl.end() - V));
@@ -1801,7 +1801,7 @@ int main(int argc, char** argv) {
             std::string finish, e2;
             int made = 0;
             const double ts0 = now_s();
-            std::mt19937_64 srng(cli_samp.seed ? cli_samp.seed : 0x57A7A123456789ABull);
+            std::mt19937_64 srng(cli_samp.has_seed ? cli_samp.seed : 0x57A7A123456789ABull);
             sp.run(tok, gen, max_ctx, r.c.eos, -1, [&](int t) { sids.push_back(t); return true; }, finish, e2, made, cli_prob ? &cli_samp : nullptr, cli_prob ? &srng : nullptr);
             const double tsd = now_s() - ts0;
             if (finish == "error") { fprintf(stderr, "spec: %s\n", e2.c_str()); return 1; }
@@ -1825,7 +1825,7 @@ int main(int argc, char** argv) {
         std::string finish, e2, gen_ids;
         int made = 0;
         const double t1 = now_s();
-        std::mt19937_64 srng(cli_samp.seed ? cli_samp.seed : 0x57A7A123456789ABull);
+        std::mt19937_64 srng(cli_samp.has_seed ? cli_samp.seed : 0x57A7A123456789ABull);
         sp.run(tok, gen, max_ctx, r.c.eos, -1, [&](int t) { sids.push_back(t); gen_ids += std::to_string(t) + " "; return true; }, finish, e2, made, cli_prob ? &cli_samp : nullptr, cli_prob ? &srng : nullptr);
         const double td = now_s() - t1;
         if (finish == "error") { fprintf(stderr, "spec: %s\n", e2.c_str()); return 1; }

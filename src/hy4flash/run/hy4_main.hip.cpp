@@ -389,7 +389,7 @@ int main(int argc, char** argv) {
         else if (a == "--top-p") cli_samp.top_p = (float)atof(nxt().c_str());
         else if (a == "--top-k") cli_samp.top_k = atoi(nxt().c_str());
         else if (a == "--min-p") cli_samp.min_p = (float)atof(nxt().c_str());
-        else if (a == "--seed") cli_samp.seed = (uint64_t)strtoull(nxt().c_str(), nullptr, 10);
+        else if (a == "--seed") { cli_samp.seed = (uint64_t)strtoull(nxt().c_str(), nullptr, 10); cli_samp.has_seed = true; }
         else if (a == "--dump-dfly-batch") dump_dfly_batch = nxt();
         else if (a == "--dump-dfly-out") dump_dfly_out = nxt();
         else if (a == "--dump-dfly-gen") dump_dfly_gen = atoi(nxt().c_str());
@@ -870,7 +870,7 @@ int main(int argc, char** argv) {
         sp.want_margin = want_margins;
         std::string gen_ids, finish, e2;
         int made = 0;
-        std::mt19937_64 cli_rng(cli_samp.seed ? cli_samp.seed : 20261120ULL);
+        std::mt19937_64 cli_rng(cli_samp.has_seed ? cli_samp.seed : 20261120ULL);
         const SampleOpts* sptr = (!cli_samp.greedy() || cli_samp.penalties()) ? &cli_samp : nullptr;
         const double t1 = now_s();
         sp.run(tok, gen, max_ctx, r.c.eos, -1, [&](int t) { gen_ids += std::to_string(t) + " "; return true; }, finish, e2, made, sptr, sptr ? &cli_rng : nullptr);

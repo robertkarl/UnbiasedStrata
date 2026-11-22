@@ -213,6 +213,7 @@ struct strata_context_impl {
     bool                     engine_is_poly = false;
     bool                     engine_is_hy4 = false;
     long long                n_ctx = 0;
+    std::atomic<bool>        stopping{false};
     std::atomic<bool>        engine_dead{false};
 
     Slot slot;
@@ -1129,10 +1130,11 @@ struct strata_context_impl {
             return res;
         }
 
+        const auto should_stop = [this, &req] { return stopping.load() || req.should_stop(); };
         const bool stream = json_value(data, "stream", false);
 
         if (!stream) {
-            auto all_results = rd.wait_for_all(req.should_stop);
+            auto all_results = rd.wait_for_all(should_stop);
             if (all_results.is_terminated) {
                 return res; // connection closed
             } else if (all_results.error) {
@@ -1147,9 +1149,9 @@ struct strata_context_impl {
         }
 
         // streaming: the first error is a plain (non-stream) error response, as OpenAI does
-        auto first_result = rd.next(req.should_stop);
+        auto first_result = rd.next(should_stop);
         if (first_result == nullptr) {
-            GGML_ASSERT(req.should_stop());
+            GGML_ASSERT(should_stop());
             return res;
         }
         if (first_result->is_error()) {
@@ -1173,14 +1175,14 @@ struct strata_context_impl {
         }
         res->status       = 200;
         res->content_type = "text/event-stream";
-        res->set_next([res_this = res.get(), res_type, sse_ping_interval](std::string & output) -> bool {
+        res->set_next([this, res_this = res.get(), res_type, sse_ping_interval](std::string & output) -> bool {
             static auto format_error = [](task_response_type res_type, const json & res_json) {
                 if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
                     return format_anthropic_sse({{"event", "error"}, {"data", res_json}});
                 }
                 return format_oai_sse(json {{ "error", res_json }});
             };
-            auto effective_should_stop = [&res_this]() { return res_this->should_stop(); };
+            auto effective_should_stop = [this, res_this]() { return stopping.load() || res_this->should_stop(); };
 
             try {
                 if (effective_should_stop()) {
@@ -1425,8 +1427,8 @@ void strata_context::start_loop() {
 }
 
 void strata_context::stop_loop() {
+    impl->stopping.store(true);
     impl->queue_tasks.terminate();
-    impl->queue_results.terminate();
 }
 
 void strata_context::terminate() {

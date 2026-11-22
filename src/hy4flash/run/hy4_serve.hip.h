@@ -14,6 +14,7 @@
 //
 // Written against Runner's committed API (init, forward_chunk, head, logits, d_argmax, prefetch_engram, eio); no kernel is touched.
 #pragma once
+#include "hy4_line_input.h"
 #include <atomic>
 #include <algorithm>
 #include <chrono>
@@ -72,45 +73,7 @@ inline void proto(const char* fmt, ...) {
 }
 
 // ---- stdin on its own thread: STOP is seen while a request runs -----------------------------------------------------------------------------------------------
-class LineInput {
-public:
-    std::atomic<bool> stop{false};
-    void start() {
-        th_ = std::thread([this] {
-            std::string line;
-            while (std::getline(std::cin, line)) {
-                while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) line.pop_back();
-                if (line == "STOP") {
-                    stop.store(true);
-                    continue;
-                }
-                std::lock_guard<std::mutex> lk(m_);
-                q_.push_back(line);
-                cv_.notify_one();
-            }
-            std::lock_guard<std::mutex> lk(m_);
-            eof_ = true;
-            cv_.notify_all();
-        });
-        th_.detach();
-    }
-    // false at EOF with nothing left
-    bool next(std::string& out) {
-        std::unique_lock<std::mutex> lk(m_);
-        cv_.wait(lk, [this] { return !q_.empty() || eof_; });
-        if (q_.empty()) return false;
-        out = q_.front();
-        q_.pop_front();
-        return true;
-    }
 
-private:
-    std::thread th_;
-    std::mutex m_;
-    std::condition_variable cv_;
-    std::deque<std::string> q_;
-    bool eof_ = false;
-};
 
 // ---- parsing a GEN line ---------------------------------------------------------------------------------------------------------------------------------------
 struct GenReq {
@@ -159,7 +122,7 @@ inline bool parse_gen(const std::string& line, GenReq& r, std::string& err) {
         else if (key == "penalty_freq") r.s.freq = (float)d;
         else if (key == "penalty_present") r.s.pres = (float)d;
         else if (key == "penalty_last_n") r.s.last_n = (int)d;
-        else if (key == "seed") r.s.seed = (uint64_t)strtoull(val.c_str(), nullptr, 10);
+        else if (key == "seed") { r.s.seed = (uint64_t)strtoull(val.c_str(), nullptr, 10); r.s.has_seed = true; }
         else if (key == "prefill") r.prefill_only = d != 0;
         else if (key == "image") r.images.push_back(pct_decode(val));  // HY4-VISION
         else if (key == "pcie_frac" || key == "spec_min_p" || key == "prefill_pipe") continue;  // tuning keys of the Strata engine: not ours
@@ -316,10 +279,9 @@ inline int hy4_serve_main(const ServeOpts& o) {
           o.session_reuse ? 1 : 0, use_spec ? "dfly2" : "none", images_ok ? 1 : 0);
     proto("READY %d stop", max_ctx);
 
-    LineInput in;
-    in.start();
+    auto in = hy4::LineInput::start();
     std::string line;
-    while (in.next(line)) {
+    while (in->next(line)) {
         if (line == "QUIT") break;
         if (line.empty()) continue;
         GenReq q;
@@ -328,7 +290,6 @@ inline int hy4_serve_main(const ServeOpts& o) {
             proto("ERR %s", perr.c_str());
             continue;
         }
-        in.stop.store(false);
         // HY4-VISION (protocol 1.6b): image=<path> keys, one per image-pad token of the ids. Decode + resize the pictures (CPU), expand each pad to its run, tell serve with IMG lines.
         r.vis = nullptr;
         vctx.release();
@@ -377,10 +338,10 @@ inline int hy4_serve_main(const ServeOpts& o) {
         // HY4-VISION: encode the pictures now (loads the shard on first use); the runner hooks fill the prompt's image rows. No KV reuse across picture requests.
         if (has_images) {
             std::string ierr;
-            venc.cancel = &in.stop;
+            venc.cancel = &in->stop;
             r.vcache_release_vram(1280ull << 20);  // reclaim ~1.25 GiB from tail vcache slabs for vision weights + encode scratch
             if (!venc.load(o.vision, ierr) || !vctx.setup(venc, r.st, q.ids, recs, r.Tc, ierr)) {
-                if (in.stop.load()) {
+                if (in->stop.load()) {
                     proto("DONE 0 %d %.1f 0.0 cancel", T0, (now_s() - t_req) * 1000.0);
                     continue;
                 }
@@ -400,7 +361,7 @@ inline int hy4_serve_main(const ServeOpts& o) {
         tok.assign(q.ids.begin(), q.ids.end());
         fwd = 0;
         if (start > 0) proto("RESUME %d", start);
-        std::mt19937_64 rng(q.s.seed ? q.s.seed : std::random_device{}());
+        std::mt19937_64 rng(q.s.has_seed ? q.s.seed : std::random_device{}());
         const double t0 = has_images ? t_req : now_s();  // the prompt time of a picture request includes the picture encoding
         int done = start;
         bool cancelled = false, failed = false;
@@ -423,7 +384,7 @@ inline int hy4_serve_main(const ServeOpts& o) {
             const double ms = (now_s() - t0) * 1000.0;
             proto("PP %d %d %.0f %.1f", done, T0, ms, (done - start) / std::max(1e-9, ms / 1000.0));
             fwd = done;
-            if (!last && in.stop.load()) {
+            if (!last && in->stop.load()) {
                 cancelled = true;
                 break;
             }
@@ -451,7 +412,7 @@ inline int hy4_serve_main(const ServeOpts& o) {
         if (spec_path) {
             // DFly2 lossless greedy + exact probabilistic rejection sampling: tokens are emitted as they are accepted
             std::string fin, e2;
-            fwd = spec->run(tok, limit, max_ctx, EOS, EOT, [&](int t) { proto("T %d", t); return !in.stop.load(); }, fin, e2, made, &q.s, &rng);
+            fwd = spec->run(tok, limit, max_ctx, EOS, EOT, [&](int t) { proto("T %d", t); return !in->stop.load(); }, fin, e2, made, &q.s, &rng);
             if (fin == "error") {
                 proto("ERR spec: %s", e2.c_str());
                 return 1;
@@ -483,7 +444,7 @@ inline int hy4_serve_main(const ServeOpts& o) {
                 finish = "stop";
                 break;
             }
-            if (in.stop.load()) {
+            if (in->stop.load()) {
                 finish = "cancel";
                 break;
             }
