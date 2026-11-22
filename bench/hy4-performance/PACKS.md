@@ -26,7 +26,7 @@ Each cell gives UnbiasedStrata HTTP / stock native in input tokens per second. T
 
 ## Output distributions
 
-21 of 21 scored placements produced bit-identical logits across both conversations. Each comparison covers all 120,832 logits at 317 teacher-forced assistant targets. Accuracy is next-token accuracy on the two continuations. The paired result file includes per-conversation KL, total variation, perplexity, accuracy, and logit hashes. [All measurements](pack-matrix.json)
+21 of 21 scored placements produced bit-identical logits across both conversations. Each comparison covers all 120,832 logits at 317 teacher-forced assistant targets. The scoring runs disabled drafting and used one full-sequence chunk per conversation (393 tokens for the ledger and 414 for the museum). Accuracy is next-token accuracy on the two continuations. The paired result file includes per-conversation KL, total variation, perplexity, accuracy, and logit hashes. [All measurements](pack-matrix.json)
 
 The table below compares weight quantization within stock Strata, using SQ-128 as the reference.
 
@@ -39,7 +39,7 @@ The table below compares weight quantization within stock Strata, using SQ-128 a
 
 ## Held-out text quality
 
-The 4090-primary pair scored the same 2,048 next tokens from the WikiText-2 raw test split on each checkpoint. From the 58 articles with at least 640 tokens, take articles 0, 14, 29, and 43 in corpus order. Use the first 128 tokens of each as context and score the next 512. The JSON lists the article titles, token digests and per-article results. [Pinned dataset](https://huggingface.co/datasets/ggml-org/ci/tree/927b3642933080f1b0e811e2f916e14c292992f9)
+The 4090-primary pair scored the same 2,048 next tokens from the WikiText-2 raw test split on each checkpoint. From the 58 articles with at least 640 tokens, take articles 0, 14, 29, and 43 in corpus order. Use the first 128 tokens of each as context and score the next 512. The runner scored each article with drafting disabled and a 639-token input chunk. The JSON lists the article titles, token digests and per-article results. [Pinned dataset](https://huggingface.co/datasets/ggml-org/ci/tree/927b3642933080f1b0e811e2f916e14c292992f9)
 
 | Text pack | Perplexity | Next-token accuracy | Mean KL from SQ-128 | Top-1 agreement with SQ-128 |
 |---|---:|---:|---:|---:|
@@ -55,4 +55,4 @@ SQ-96 is the closer approximation when preserving the larger pack’s token choi
 
 ## Conditions
 
-Both programs used a 4,096-token context, DFly2, seed 41, temperature 0.9, top-k 64, top-p 1, and disabled session reuse. The CUDA planner chose the chunk size. Metal used 128-token chunks for throughput. Each sustained rate comes from one generation per program and configuration. The Metal cache sizes are decimal GB on the 96 GiB machine. The 12 GB cache exercises the runner’s path for smaller Macs. [Conversations](conversations.json) · [Published text packs](https://huggingface.co/strata-engine/Hy4-Flash-Strata/tree/995bac227ab7e0d221772be641e2b5954a9fac06)
+For throughput, both programs used a 4,096-token context, DFly2, seed 41, temperature 0.9, top-k 64, top-p 1, and disabled session reuse. The CUDA planner chose the chunk size. Metal used 128-token chunks for throughput. Each sustained rate comes from one generation per program and configuration. The Metal cache sizes are decimal GB on the 96 GiB machine. The 12 GB cache exercises the runner’s path for smaller Macs. [Conversations](conversations.json) · [Published text packs](https://huggingface.co/strata-engine/Hy4-Flash-Strata/tree/995bac227ab7e0d221772be641e2b5954a9fac06)
