@@ -39,6 +39,18 @@ CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES="$GPU_4090_UUID,$GPU_A6000_UUI
 
 The loader should report all 20,992 experts in VRAM and zero on the CPU for this pair. The SQ-128 pack leaves 43.56 GB of experts on the CPU. For the measured long-context configuration, use `--ctx 131072 --chunk 1024`. The [CUDA experiment log](../bench/hy4-performance/UNBIASEDSTRATA.md) records the throughput and numerical comparisons.
 
+### Matching the CUDA oracle on an A6000
+
+Strata engine 0.1.64 ships cuBLAS and cuBLASLt 12.9.2. On an RTX A6000, the same SQ-64 ledger prompt produced mean KL 0.002865 when the source build loaded system cuBLAS 12.4.5. Each executable reproduced its own logits in a fresh process. Launching the source build with the publisher’s libraries made all 163 scored logit vectors bit-identical to stock. With the A6000 primary and the 4090 secondary, this also gave identical SQ-128 logits at all 317 targets in the two conversations. [Repeat controls and logit hashes](../bench/hy4-performance/ampere-cublas.json)
+
+For an oracle comparison, set the library search path for the server process to the directory containing the published `libcublas.so.12` and `libcublasLt.so.12`. The child runner inherits it. Check the resolution on the runner binary before launching the server.
+
+```sh
+STRATA_LIB_DIR=/path/to/published-strata-engine
+export LD_LIBRARY_PATH="${STRATA_LIB_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+ldd build-hy4/bin/strata-hy4 | grep libcublas
+```
+
 ## Integration choice
 
 | Approach | What the source comparison showed |
