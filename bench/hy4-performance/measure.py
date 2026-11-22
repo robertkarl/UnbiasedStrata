@@ -64,6 +64,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for key in ("engine", "model", "engram", "tokenizer", "out"):
         parser.add_argument("--" + key, type=Path, required=True)
+    parser.add_argument("--prompt-ids", type=Path, help="reuse an exact saved token sequence instead of generating the inventory fixture")
     parser.add_argument("--gpus", required=True, help="ordered physical NVIDIA UUIDs, comma separated")
     parser.add_argument("--chunk", type=int, default=0, help="0 selects the engine default")
     parser.add_argument("--context", type=int, default=4096)
@@ -76,7 +77,12 @@ def main():
     if opt.prompt + opt.generate > opt.context:
         parser.error("input and output exceed the configured context")
     opt.out.mkdir(parents=True, exist_ok=False)
-    ids = workload(Tokenizer.from_file(str(opt.tokenizer)), opt.prompt)
+    if opt.prompt_ids:
+        ids = [int(token) for token in opt.prompt_ids.read_text().split()]
+        if len(ids) != opt.prompt:
+            parser.error("--prompt and the number of saved token IDs differ")
+    else:
+        ids = workload(Tokenizer.from_file(str(opt.tokenizer)), opt.prompt)
     (opt.out/"prompt.ids").write_text(" ".join(map(str, ids))+"\n")
     env = dict(os.environ, CUDA_VISIBLE_DEVICES=opt.gpus, CUDA_DEVICE_ORDER="PCI_BUS_ID")
     env["LD_LIBRARY_PATH"] = str(opt.engine.resolve().parent) + ":" + env.get("LD_LIBRARY_PATH", "")
