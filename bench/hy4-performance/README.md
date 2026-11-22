@@ -1,6 +1,6 @@
 # Hy4 CUDA performance trials
 
-See the [measured results](RESULTS.md) for the three-run confirmation and same-prompt checkpoint comparison.
+The [stock measurements](RESULTS.md) compare checkpoint sizes. The [UnbiasedStrata measurements](UNBIASEDSTRATA.md) compare the native and HTTP paths with stock on the same cards.
 
 All measurements concern one request at a time. The stock engine is the unmodified Linux x86-64 CUDA 12 package from Strata v0.2.18, engine v0.1.64, source `6e38f588a646`, built with CUDA 12.9. Its executable SHA-256 is `02cffdc5d456506c2b0dbd91cdc31f2a4adf97f813f3173f87f3c160a0ece7d1`. [Release](https://github.com/Niko1221/Strata/releases/tag/v0.2.18)
 
