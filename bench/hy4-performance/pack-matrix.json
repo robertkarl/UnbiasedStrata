@@ -1,0 +1,2119 @@
+{
+  "revision": "f799047c4cfbcd27e0bf0db406461b5f462ad2c0",
+  "published_engine": "0.1.64",
+  "rows": [
+    {
+      "quant": 64,
+      "placement": "4090",
+      "measured_mode": "4090",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "02cffdc5d456506c2b0dbd91cdc31f2a4adf97f813f3173f87f3c160a0ece7d1",
+      "engine_sha256": "363f7961ad61c30a4240f9301c58aa1af4b5029ce1eff75f9fa3cf8b43b18237",
+      "frontend_sha256": "ef7cafd3b942279dc94e50de51e5cf6e9731156f00ed16a4606c9d163a59eb8e",
+      "stock_short": {
+        "pp": 37.420638085364374,
+        "decode": 18.679183262010206,
+        "e2e": 12.657305983580716,
+        "load": 76.82138420001138
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 7.299448730016593,
+        "elapsed_s": 97.19598828902235,
+        "prefill_tps": 31.646225426598058,
+        "decode_tps": 22.7706206494901,
+        "e2e_tps": 21.070828498703666,
+        "output_sha256": "ed348b7fe3a4a763aaab8e9022f4b964f0f3c5736638a476535d4d42969e8eec"
+      },
+      "http_short": {
+        "pp": 37.429504062319765,
+        "decode": 16.245518457227632,
+        "e2e": 11.495728585063235,
+        "load": 28.39365793595789
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 7.594402677030303,
+        "elapsed_s": 104.8353655100218,
+        "prefill_tps": 30.417138756504507,
+        "decode_tps": 21.05086533984267,
+        "e2e_tps": 19.535392374858656,
+        "output_sha256": "cc6617eb269b1021fd89313255a694f3ddff1309499abb4bd7582f85a8dd4d62"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 7.346171080503517,
+          "candidate_ppl": 7.346171080503517,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.5214723926380368,
+          "candidate_accuracy": 0.5214723926380368,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "ae18dfd3e35b405d0f6d6804dba3a82ee006fcd078e4907f092782cf928998bf",
+            "ae18dfd3e35b405d0f6d6804dba3a82ee006fcd078e4907f092782cf928998bf"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.434688044336806,
+          "candidate_ppl": 8.434688044336806,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.474025974025974,
+          "candidate_accuracy": 0.474025974025974,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "38f30b98f5180b8fce37294d800fa05698db28c1811ef42115e8c411a936156f",
+            "38f30b98f5180b8fce37294d800fa05698db28c1811ef42115e8c411a936156f"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 64,
+      "placement": "a6000",
+      "measured_mode": "a6000",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "02cffdc5d456506c2b0dbd91cdc31f2a4adf97f813f3173f87f3c160a0ece7d1",
+      "engine_sha256": "363f7961ad61c30a4240f9301c58aa1af4b5029ce1eff75f9fa3cf8b43b18237",
+      "frontend_sha256": "ef7cafd3b942279dc94e50de51e5cf6e9731156f00ed16a4606c9d163a59eb8e",
+      "stock_short": {
+        "pp": 84.49816656435377,
+        "decode": 32.30958255217544,
+        "e2e": 23.69558325035357,
+        "load": 28.205248542013578
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 4.30460299301194,
+        "elapsed_s": 59.71972663496854,
+        "prefill_tps": 53.663485430596886,
+        "decode_tps": 36.93937440663129,
+        "e2e_tps": 34.29352603233126,
+        "output_sha256": "82c50636bca15bd860197d59dc69d4afd4eb9653349830e0c46d2cccb4d2a499"
+      },
+      "http_short": {
+        "pp": 85.83617553593622,
+        "decode": 27.94309202785275,
+        "e2e": 21.347954343593624,
+        "load": 27.526109421043657
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 4.1823574409936555,
+        "elapsed_s": 68.52421749697533,
+        "prefill_tps": 55.23200808611863,
+        "decode_tps": 31.814604361219377,
+        "e2e_tps": 29.887243879733457,
+        "output_sha256": "e53d1813b492b11f1ee1cbaa92ef11d3a18a6ed0fa5f3a661341de60429bfaf7"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 7.385974885272815,
+          "candidate_ppl": 7.385974885272815,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.5153374233128835,
+          "candidate_accuracy": 0.5153374233128835,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "e2a8e50e057d980f9ca3ad1d53084815da818ce4e3fb04c106b436fee41ac843",
+            "e2a8e50e057d980f9ca3ad1d53084815da818ce4e3fb04c106b436fee41ac843"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.417502692321222,
+          "candidate_ppl": 8.417502692321222,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.4675324675324675,
+          "candidate_accuracy": 0.4675324675324675,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "4a09d5ed455ce7bcd2527830bdf1f3a7c10d548a7ee3d2e8611bc970525fff18",
+            "4a09d5ed455ce7bcd2527830bdf1f3a7c10d548a7ee3d2e8611bc970525fff18"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 64,
+      "placement": "4090-a6000",
+      "measured_mode": "4090-a6000",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "02cffdc5d456506c2b0dbd91cdc31f2a4adf97f813f3173f87f3c160a0ece7d1",
+      "engine_sha256": "363f7961ad61c30a4240f9301c58aa1af4b5029ce1eff75f9fa3cf8b43b18237",
+      "frontend_sha256": "ef7cafd3b942279dc94e50de51e5cf6e9731156f00ed16a4606c9d163a59eb8e",
+      "stock_short": {
+        "pp": 1063.475725228152,
+        "decode": 79.4568880025675,
+        "e2e": 74.40552920862402,
+        "load": 11.690060232009273
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 0.22881267400225624,
+        "elapsed_s": 21.627858727995772,
+        "prefill_tps": 1009.5594617181135,
+        "decode_tps": 95.65846976706639,
+        "e2e_tps": 94.692684364033,
+        "output_sha256": "61d4db63e84d4ab66a4f32e03a5a2b44d7a25ab627dde928c8b3aadb6f2fe140"
+      },
+      "http_short": {
+        "pp": 1095.95466688002,
+        "decode": 65.80513849026646,
+        "e2e": 62.44363869353043,
+        "load": 10.093970593006816
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 0.21887412498472258,
+        "elapsed_s": 23.24316470703343,
+        "prefill_tps": 1055.4011353152127,
+        "decode_tps": 88.90725578915459,
+        "e2e_tps": 88.1119256269036,
+        "output_sha256": "296bcdafd90330a84583bf861e4e8f92e6cbddb50139aaabece3f3e3662906fc"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 7.430196673663612,
+          "candidate_ppl": 7.430196673663612,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.5214723926380368,
+          "candidate_accuracy": 0.5214723926380368,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "fde4ba9e5f4475f5c926894bf453ca9db67fe5269cf9aa30aa218e175ac1028a",
+            "fde4ba9e5f4475f5c926894bf453ca9db67fe5269cf9aa30aa218e175ac1028a"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.483685223478128,
+          "candidate_ppl": 8.483685223478128,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.461038961038961,
+          "candidate_accuracy": 0.461038961038961,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "f5bce0eedd0dff2fea7f00e826e20fd0bfd574a8e50be5c4a381970b0c40408b",
+            "f5bce0eedd0dff2fea7f00e826e20fd0bfd574a8e50be5c4a381970b0c40408b"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 64,
+      "placement": "a6000-4090",
+      "measured_mode": "a6000-4090",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "02cffdc5d456506c2b0dbd91cdc31f2a4adf97f813f3173f87f3c160a0ece7d1",
+      "engine_sha256": "363f7961ad61c30a4240f9301c58aa1af4b5029ce1eff75f9fa3cf8b43b18237",
+      "frontend_sha256": "ef7cafd3b942279dc94e50de51e5cf6e9731156f00ed16a4606c9d163a59eb8e",
+      "stock_short": {
+        "pp": 1014.1567355232208,
+        "decode": 56.420963663356595,
+        "e2e": 53.757087738944236,
+        "load": 9.304640081012622
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 0.23398836597334594,
+        "elapsed_s": 26.089918610989116,
+        "prefill_tps": 987.2285702713683,
+        "decode_tps": 79.16945863491408,
+        "e2e_tps": 78.49775350151452,
+        "output_sha256": "fe31e1933b286a34629b6cb8bab5da8996671ad58c304e0cb433375a1f06b324"
+      },
+      "http_short": {
+        "pp": 1032.3803537711376,
+        "decode": 57.00935311889817,
+        "e2e": 54.33647886570921,
+        "load": 9.54535330698127
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 0.22969082702184096,
+        "elapsed_s": 28.629307902010623,
+        "prefill_tps": 1005.6997181608587,
+        "decode_tps": 72.07887787233474,
+        "e2e_tps": 71.53508589902621,
+        "output_sha256": "7b72c8eaaaedff429a3317905f25a40eff1d1a7a09b71292db63b5ae0d0d45f1"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 7.416492606024831,
+          "candidate_ppl": 7.416492606024831,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.5337423312883436,
+          "candidate_accuracy": 0.5337423312883436,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "894831b476231414476c34db1f608f36eac0d8919ba4437e1c5d41722315ec2d",
+            "894831b476231414476c34db1f608f36eac0d8919ba4437e1c5d41722315ec2d"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.385398058122428,
+          "candidate_ppl": 8.385398058122428,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.474025974025974,
+          "candidate_accuracy": 0.474025974025974,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "9a6e553a016ef7f0990bd8b9a6ede3416c88f9091e44ac52fcfe3a40e84d041e",
+            "9a6e553a016ef7f0990bd8b9a6ede3416c88f9091e44ac52fcfe3a40e84d041e"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 64,
+      "placement": "metal-auto",
+      "measured_mode": "metal-auto",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "99f9c509d155eccf3b78b0eded3d0e6ece02d76c263cc9f88acbb865adecdaef",
+      "engine_sha256": "0efaa9d65730f38bd8bc156982f0c2b4dcfc18adadbe5c6860ee5357f182b270",
+      "frontend_sha256": "30c8dad9dd1292dc6092ba5137383071f2b46a54f5883cf5831b665c304a199b",
+      "stock_short": {
+        "pp": 181.41271274724454,
+        "decode": 36.66639117115468,
+        "e2e": 30.80395278503252,
+        "load": 23.57973891706206
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 1.373535708989948,
+        "elapsed_s": 43.937369292019866,
+        "prefill_tps": 168.17910046901483,
+        "decode_tps": 48.0924725919456,
+        "e2e_tps": 46.61180295953605,
+        "output_sha256": "925f289ef62d59a9126a0fc3064b53e4c7b76850127f6b34aae009c26afc07ff"
+      },
+      "http_short": {
+        "pp": 181.40088497178087,
+        "decode": 36.68799057196016,
+        "e2e": 30.817044569518803,
+        "load": 24.858642207924277
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 1.3684472079621628,
+        "elapsed_s": 44.36017137498129,
+        "prefill_tps": 168.80446586170908,
+        "decode_tps": 47.61400228489133,
+        "e2e_tps": 46.16754030745364,
+        "output_sha256": "925f289ef62d59a9126a0fc3064b53e4c7b76850127f6b34aae009c26afc07ff"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 7.385537668072144,
+          "candidate_ppl": 7.385537668072144,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.5276073619631901,
+          "candidate_accuracy": 0.5276073619631901,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "bc7d63ed3b73b236e50c74ee3438d9fe062bbf6f4cea65149938d4b609c921ed",
+            "bc7d63ed3b73b236e50c74ee3438d9fe062bbf6f4cea65149938d4b609c921ed"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.35420264542512,
+          "candidate_ppl": 8.35420264542512,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.474025974025974,
+          "candidate_accuracy": 0.474025974025974,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "d2199b2a43aed8141d0eb79c56bae79cd09a57c267422cc33bd3a934d5cb9f33",
+            "d2199b2a43aed8141d0eb79c56bae79cd09a57c267422cc33bd3a934d5cb9f33"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 64,
+      "placement": "metal-cache32",
+      "measured_mode": "metal-cache32",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "99f9c509d155eccf3b78b0eded3d0e6ece02d76c263cc9f88acbb865adecdaef",
+      "engine_sha256": "0efaa9d65730f38bd8bc156982f0c2b4dcfc18adadbe5c6860ee5357f182b270",
+      "frontend_sha256": "30c8dad9dd1292dc6092ba5137383071f2b46a54f5883cf5831b665c304a199b",
+      "stock_short": {
+        "pp": 26.52349710597196,
+        "decode": 14.826816927381202,
+        "e2e": 9.670097897432273,
+        "load": 3.052020375034772
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 8.47027612500824,
+        "elapsed_s": 111.70436666707974,
+        "prefill_tps": 27.271838201115937,
+        "decode_tps": 19.8287212029613,
+        "e2e_tps": 18.334108693385247,
+        "output_sha256": "925f289ef62d59a9126a0fc3064b53e4c7b76850127f6b34aae009c26afc07ff"
+      },
+      "http_short": {
+        "pp": 29.148271367159108,
+        "decode": 14.801275821036713,
+        "e2e": 9.9735064530548,
+        "load": 3.042672459036112
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 5.743791957967915,
+        "elapsed_s": 103.94530762499198,
+        "prefill_tps": 40.21733406962132,
+        "decode_tps": 20.844928160197433,
+        "e2e_tps": 19.70266909391099,
+        "output_sha256": "925f289ef62d59a9126a0fc3064b53e4c7b76850127f6b34aae009c26afc07ff"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 7.385537668072144,
+          "candidate_ppl": 7.385537668072144,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.5276073619631901,
+          "candidate_accuracy": 0.5276073619631901,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "bc7d63ed3b73b236e50c74ee3438d9fe062bbf6f4cea65149938d4b609c921ed",
+            "bc7d63ed3b73b236e50c74ee3438d9fe062bbf6f4cea65149938d4b609c921ed"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.35420264542512,
+          "candidate_ppl": 8.35420264542512,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.474025974025974,
+          "candidate_accuracy": 0.474025974025974,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "d2199b2a43aed8141d0eb79c56bae79cd09a57c267422cc33bd3a934d5cb9f33",
+            "d2199b2a43aed8141d0eb79c56bae79cd09a57c267422cc33bd3a934d5cb9f33"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 64,
+      "placement": "metal-cache12",
+      "measured_mode": "metal-cache12",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "99f9c509d155eccf3b78b0eded3d0e6ece02d76c263cc9f88acbb865adecdaef",
+      "engine_sha256": "0efaa9d65730f38bd8bc156982f0c2b4dcfc18adadbe5c6860ee5357f182b270",
+      "frontend_sha256": "30c8dad9dd1292dc6092ba5137383071f2b46a54f5883cf5831b665c304a199b",
+      "stock_short": {
+        "pp": 81.71078241208144,
+        "decode": 15.555907966718696,
+        "e2e": 13.193765045152825,
+        "load": 2.5537538330536336
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 2.9341993749840185,
+        "elapsed_s": 106.31318008399103,
+        "prefill_tps": 78.72675659651048,
+        "decode_tps": 19.800930382182155,
+        "e2e_tps": 19.263839143763835,
+        "output_sha256": "925f289ef62d59a9126a0fc3064b53e4c7b76850127f6b34aae009c26afc07ff"
+      },
+      "http_short": {
+        "pp": 77.74493085192388,
+        "decode": 14.136620392487965,
+        "e2e": 12.07397469610737,
+        "load": 3.0423721249680966
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 2.941170333069749,
+        "elapsed_s": 106.60332491609734,
+        "prefill_tps": 78.54016389418065,
+        "decode_tps": 19.746877912456164,
+        "e2e_tps": 19.21140828967472,
+        "output_sha256": "925f289ef62d59a9126a0fc3064b53e4c7b76850127f6b34aae009c26afc07ff"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 7.385537668072144,
+          "candidate_ppl": 7.385537668072144,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.5276073619631901,
+          "candidate_accuracy": 0.5276073619631901,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "bc7d63ed3b73b236e50c74ee3438d9fe062bbf6f4cea65149938d4b609c921ed",
+            "bc7d63ed3b73b236e50c74ee3438d9fe062bbf6f4cea65149938d4b609c921ed"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.35420264542512,
+          "candidate_ppl": 8.35420264542512,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.474025974025974,
+          "candidate_accuracy": 0.474025974025974,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "d2199b2a43aed8141d0eb79c56bae79cd09a57c267422cc33bd3a934d5cb9f33",
+            "d2199b2a43aed8141d0eb79c56bae79cd09a57c267422cc33bd3a934d5cb9f33"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 96,
+      "placement": "4090",
+      "measured_mode": "4090",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "02cffdc5d456506c2b0dbd91cdc31f2a4adf97f813f3173f87f3c160a0ece7d1",
+      "engine_sha256": "363f7961ad61c30a4240f9301c58aa1af4b5029ce1eff75f9fa3cf8b43b18237",
+      "frontend_sha256": "ef7cafd3b942279dc94e50de51e5cf6e9731156f00ed16a4606c9d163a59eb8e",
+      "stock_short": {
+        "pp": 23.74465715675469,
+        "decode": 12.464028594133428,
+        "e2e": 8.306537139163828,
+        "load": 75.18760695803212
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 11.412861503020395,
+        "elapsed_s": 161.77443760598544,
+        "prefill_tps": 20.24032272177019,
+        "decode_tps": 13.613850380221136,
+        "e2e_tps": 12.659602037919411,
+        "output_sha256": "f433bace7ec19ffb4604893338ab3b4bbdd26c8f3781bf5f6d05f588ef91f5b0"
+      },
+      "http_short": {
+        "pp": 23.443448887922894,
+        "decode": 10.748709248712842,
+        "e2e": 7.4815953021474275,
+        "load": 36.134162468020804
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 11.3045371180051,
+        "elapsed_s": 157.8421761619975,
+        "prefill_tps": 20.434273211600928,
+        "decode_tps": 13.969135286687937,
+        "e2e_tps": 12.974985835839497,
+        "output_sha256": "2bfbdf2a897415d708fb6cd7dcb1f94fad8c27e6785909a8063b18e96dea577a"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 7.721594074345987,
+          "candidate_ppl": 7.721594074345987,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.5214723926380368,
+          "candidate_accuracy": 0.5214723926380368,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "be07f561bc6d74257385439e1ae03b8cfaad9eaef5514227605dd161e0309a2c",
+            "be07f561bc6d74257385439e1ae03b8cfaad9eaef5514227605dd161e0309a2c"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 9.297981257491564,
+          "candidate_ppl": 9.297981257491564,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.461038961038961,
+          "candidate_accuracy": 0.461038961038961,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "c1799651ec66293b8f005a4abd102f56f9a7549f648a312c8cbe0229d41f3a9a",
+            "c1799651ec66293b8f005a4abd102f56f9a7549f648a312c8cbe0229d41f3a9a"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 96,
+      "placement": "a6000",
+      "measured_mode": "a6000",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "02cffdc5d456506c2b0dbd91cdc31f2a4adf97f813f3173f87f3c160a0ece7d1",
+      "engine_sha256": "363f7961ad61c30a4240f9301c58aa1af4b5029ce1eff75f9fa3cf8b43b18237",
+      "frontend_sha256": "ef7cafd3b942279dc94e50de51e5cf6e9731156f00ed16a4606c9d163a59eb8e",
+      "stock_short": {
+        "pp": 38.56143166954524,
+        "decode": 18.977151156430484,
+        "e2e": 12.918434253921989,
+        "load": 37.80952304502716
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 8.246658232004847,
+        "elapsed_s": 109.81677386100637,
+        "prefill_tps": 28.011346354029943,
+        "decode_tps": 20.15356571490912,
+        "e2e_tps": 18.64924572080515,
+        "output_sha256": "767a7e1fcfe621e2d20df5973dade66961b8af8000514e7400dd62a364d5a178"
+      },
+      "http_short": {
+        "pp": 38.417009120581966,
+        "decode": 17.09373949651433,
+        "e2e": 12.006740572622238,
+        "load": 37.74172789201839
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 8.291117866989225,
+        "elapsed_s": 116.56678404001286,
+        "prefill_tps": 27.86114052481606,
+        "decode_tps": 18.9054938162388,
+        "e2e_tps": 17.56932746207531,
+        "output_sha256": "ab62987566ad71dc4e7f6ef61bf49a0716e7288405fe6d7abe5c63979de2e597"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 7.79935114080875,
+          "candidate_ppl": 7.79935114080875,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.5153374233128835,
+          "candidate_accuracy": 0.5153374233128835,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "ec9823a354900c27a5bed26c622ce6d56ec5629778999b8db5b1ec11a6b56c1a",
+            "ec9823a354900c27a5bed26c622ce6d56ec5629778999b8db5b1ec11a6b56c1a"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 9.138241300697066,
+          "candidate_ppl": 9.138241300697066,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.461038961038961,
+          "candidate_accuracy": 0.461038961038961,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "5ee5e75d4ec047405b6176918b6d5bb5b349e482e7c418c72f068375c45de6aa",
+            "5ee5e75d4ec047405b6176918b6d5bb5b349e482e7c418c72f068375c45de6aa"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 96,
+      "placement": "4090-a6000",
+      "measured_mode": "4090-a6000",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "02cffdc5d456506c2b0dbd91cdc31f2a4adf97f813f3173f87f3c160a0ece7d1",
+      "engine_sha256": "363f7961ad61c30a4240f9301c58aa1af4b5029ce1eff75f9fa3cf8b43b18237",
+      "frontend_sha256": "ef7cafd3b942279dc94e50de51e5cf6e9731156f00ed16a4606c9d163a59eb8e",
+      "stock_short": {
+        "pp": 105.15447781681554,
+        "decode": 38.23265660128758,
+        "e2e": 28.41569342374133,
+        "load": 30.052393699006643
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 2.3800191250047646,
+        "elapsed_s": 55.40972162800608,
+        "prefill_tps": 97.05804359850997,
+        "decode_tps": 38.6010085552365,
+        "e2e_tps": 36.961023080918466,
+        "output_sha256": "61b7705142b540c7367cd0fd28470e0742425917c4eccf272c9bd1fdf87f793f"
+      },
+      "http_short": {
+        "pp": 105.66697395806585,
+        "decode": 37.75881926189699,
+        "e2e": 28.188827523898798,
+        "load": 18.185260997037403
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 2.390505144954659,
+        "elapsed_s": 54.72366185695864,
+        "prefill_tps": 96.63229568342193,
+        "decode_tps": 39.11492997660829,
+        "e2e_tps": 37.424396147926586,
+        "output_sha256": "5627f81748c52dc2f5fef45dc09bf531a6b05171795ea614718b717cfc5bf0af"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 7.8041179814956685,
+          "candidate_ppl": 7.8041179814956685,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.5214723926380368,
+          "candidate_accuracy": 0.5214723926380368,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "67a9b89c1437e4cd4634ca0ba726781c3c5825fb05aa185ff33408544b380b87",
+            "67a9b89c1437e4cd4634ca0ba726781c3c5825fb05aa185ff33408544b380b87"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 9.257098912936291,
+          "candidate_ppl": 9.257098912936291,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.461038961038961,
+          "candidate_accuracy": 0.461038961038961,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "c8fa470a3714cd3c581675f838bb6fda5ea5cda778ba8213cd526e5dd64863a0",
+            "c8fa470a3714cd3c581675f838bb6fda5ea5cda778ba8213cd526e5dd64863a0"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 96,
+      "placement": "a6000-4090",
+      "measured_mode": "a6000-4090",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "02cffdc5d456506c2b0dbd91cdc31f2a4adf97f813f3173f87f3c160a0ece7d1",
+      "engine_sha256": "363f7961ad61c30a4240f9301c58aa1af4b5029ce1eff75f9fa3cf8b43b18237",
+      "frontend_sha256": "ef7cafd3b942279dc94e50de51e5cf6e9731156f00ed16a4606c9d163a59eb8e",
+      "stock_short": {
+        "pp": 99.99334576831593,
+        "decode": 37.14535407906838,
+        "e2e": 27.452827498310167,
+        "load": 17.27790374396136
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 2.4684974899864756,
+        "elapsed_s": 55.7054674429819,
+        "prefill_tps": 93.57919177032082,
+        "decode_tps": 38.450723281346775,
+        "e2e_tps": 36.76479336783699,
+        "output_sha256": "c6dfc41ec76e433916c419cda91f6cf7f822af8f211276f53cf75858e7693b46"
+      },
+      "http_short": {
+        "pp": 100.26388321007128,
+        "decode": 33.57050082748784,
+        "e2e": 25.473460322174326,
+        "load": 17.637828323990107
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 2.465847545012366,
+        "elapsed_s": 59.471953361004125,
+        "prefill_tps": 93.67975748023852,
+        "decode_tps": 35.908605849695334,
+        "e2e_tps": 34.43640042505948,
+        "output_sha256": "bda8eb300da4524460cbe3950a7ecbc0ca4df80119f2458adabee516367a04d6"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 7.742133388882397,
+          "candidate_ppl": 7.742133388882397,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.5153374233128835,
+          "candidate_accuracy": 0.5153374233128835,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "4042f490078784c7f02fc7d6c98f14cedfa1e008fb3c5dc090b5c4d15cfa3dba",
+            "4042f490078784c7f02fc7d6c98f14cedfa1e008fb3c5dc090b5c4d15cfa3dba"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 9.102923712586605,
+          "candidate_ppl": 9.102923712586605,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.461038961038961,
+          "candidate_accuracy": 0.461038961038961,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "19102baa2edddf8945a5f4ae514ac50a6a4cbfdac48f3e8844b198b5988c7307",
+            "19102baa2edddf8945a5f4ae514ac50a6a4cbfdac48f3e8844b198b5988c7307"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 96,
+      "placement": "metal-auto",
+      "measured_mode": "metal-fixed-auto",
+      "auto_failure": {
+        "reason": "stock and fork failed to allocate the same automatic Metal expert buffer",
+        "requested_bytes": 72053563392,
+        "fork_status": 1,
+        "stock_log": "stock.log",
+        "fork_log": "http-load-only.log"
+      },
+      "source_revision": "4e47baf6467f7357393a231014b208a20b3c722b",
+      "oracle_sha256": "99f9c509d155eccf3b78b0eded3d0e6ece02d76c263cc9f88acbb865adecdaef",
+      "engine_sha256": "67371ca8f5446d02e36da78d6a4785151f87907dedb7d73d8e969e1a0ed33cdc",
+      "frontend_sha256": "30c8dad9dd1292dc6092ba5137383071f2b46a54f5883cf5831b665c304a199b",
+      "stock_short": {
+        "pp": 30.940665809903955,
+        "decode": 17.464427543293475,
+        "e2e": 11.351638747970311,
+        "load": 6.339295666082762
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 5.721359624993056,
+        "elapsed_s": 117.20256995805539,
+        "prefill_tps": 40.37501837690903,
+        "decode_tps": 18.36183868011805,
+        "e2e_tps": 17.474019560602986,
+        "output_sha256": "2de9b75c7781df7aea395c54b1f519981d8c424eca5ae154a89e96bfa394b867"
+      },
+      "http_short": {
+        "pp": 31.040340921391575,
+        "decode": 17.446009461403364,
+        "e2e": 11.35660302372789,
+        "load": 8.098045042017475
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 5.866672458010726,
+        "elapsed_s": 117.96861654205713,
+        "prefill_tps": 39.37496113057718,
+        "decode_tps": 18.260221343007164,
+        "e2e_tps": 17.36054944129878,
+        "output_sha256": "2de9b75c7781df7aea395c54b1f519981d8c424eca5ae154a89e96bfa394b867"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 7.711637112176655,
+          "candidate_ppl": 7.711637112176655,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.5214723926380368,
+          "candidate_accuracy": 0.5214723926380368,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "5d9582ff81f27c5808217e87cf3428d1ad666142ecdad331335c2f5443da664e",
+            "5d9582ff81f27c5808217e87cf3428d1ad666142ecdad331335c2f5443da664e"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 9.158884459114589,
+          "candidate_ppl": 9.158884459114589,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.474025974025974,
+          "candidate_accuracy": 0.474025974025974,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "ecc25256c5632beb514f2564f6c987da46d1095f35c704f42020123840071d16",
+            "ecc25256c5632beb514f2564f6c987da46d1095f35c704f42020123840071d16"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 96,
+      "placement": "metal-cache32",
+      "measured_mode": "metal-cache32",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "99f9c509d155eccf3b78b0eded3d0e6ece02d76c263cc9f88acbb865adecdaef",
+      "engine_sha256": "0efaa9d65730f38bd8bc156982f0c2b4dcfc18adadbe5c6860ee5357f182b270",
+      "frontend_sha256": "30c8dad9dd1292dc6092ba5137383071f2b46a54f5883cf5831b665c304a199b",
+      "stock_short": {
+        "pp": 16.604686921552748,
+        "decode": 11.016593697298456,
+        "e2e": 6.743586612458101,
+        "load": 3.7406403339700773
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 12.645930666010827,
+        "elapsed_s": 185.49709970795084,
+        "prefill_tps": 18.26674573037725,
+        "decode_tps": 11.842558030390428,
+        "e2e_tps": 11.040603886661296,
+        "output_sha256": "2de9b75c7781df7aea395c54b1f519981d8c424eca5ae154a89e96bfa394b867"
+      },
+      "http_short": {
+        "pp": 16.593724053696985,
+        "decode": 10.917817914236126,
+        "e2e": 6.704832887578329,
+        "load": 3.5742009170353413
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 12.757092334097251,
+        "elapsed_s": 185.9797903751023,
+        "prefill_tps": 18.107574512303362,
+        "decode_tps": 11.817169160600791,
+        "e2e_tps": 11.011949179367244,
+        "output_sha256": "2de9b75c7781df7aea395c54b1f519981d8c424eca5ae154a89e96bfa394b867"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 7.711637112176655,
+          "candidate_ppl": 7.711637112176655,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.5214723926380368,
+          "candidate_accuracy": 0.5214723926380368,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "5d9582ff81f27c5808217e87cf3428d1ad666142ecdad331335c2f5443da664e",
+            "5d9582ff81f27c5808217e87cf3428d1ad666142ecdad331335c2f5443da664e"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 9.158884459114589,
+          "candidate_ppl": 9.158884459114589,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.474025974025974,
+          "candidate_accuracy": 0.474025974025974,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "ecc25256c5632beb514f2564f6c987da46d1095f35c704f42020123840071d16",
+            "ecc25256c5632beb514f2564f6c987da46d1095f35c704f42020123840071d16"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 96,
+      "placement": "metal-cache12",
+      "measured_mode": "metal-cache12",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "99f9c509d155eccf3b78b0eded3d0e6ece02d76c263cc9f88acbb865adecdaef",
+      "engine_sha256": "0efaa9d65730f38bd8bc156982f0c2b4dcfc18adadbe5c6860ee5357f182b270",
+      "frontend_sha256": "30c8dad9dd1292dc6092ba5137383071f2b46a54f5883cf5831b665c304a199b",
+      "stock_short": {
+        "pp": 44.80286653522167,
+        "decode": 11.973917216101093,
+        "e2e": 9.55687139988689,
+        "load": 3.053097916999832
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 5.396310166921467,
+        "elapsed_s": 170.75091750000138,
+        "prefill_tps": 42.80702792363451,
+        "decode_tps": 12.379455480648641,
+        "e2e_tps": 11.994079036207717,
+        "output_sha256": "2de9b75c7781df7aea395c54b1f519981d8c424eca5ae154a89e96bfa394b867"
+      },
+      "http_short": {
+        "pp": 42.646964617911486,
+        "decode": 11.498051383514717,
+        "e2e": 9.16044800432389,
+        "load": 3.569309458951466
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 5.0358613330172375,
+        "elapsed_s": 171.28362129209563,
+        "prefill_tps": 45.87100095180665,
+        "decode_tps": 12.31296036934404,
+        "e2e_tps": 11.956776629024429,
+        "output_sha256": "2de9b75c7781df7aea395c54b1f519981d8c424eca5ae154a89e96bfa394b867"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 7.711637112176655,
+          "candidate_ppl": 7.711637112176655,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.5214723926380368,
+          "candidate_accuracy": 0.5214723926380368,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "5d9582ff81f27c5808217e87cf3428d1ad666142ecdad331335c2f5443da664e",
+            "5d9582ff81f27c5808217e87cf3428d1ad666142ecdad331335c2f5443da664e"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 9.158884459114589,
+          "candidate_ppl": 9.158884459114589,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.474025974025974,
+          "candidate_accuracy": 0.474025974025974,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "ecc25256c5632beb514f2564f6c987da46d1095f35c704f42020123840071d16",
+            "ecc25256c5632beb514f2564f6c987da46d1095f35c704f42020123840071d16"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 128,
+      "placement": "4090",
+      "measured_mode": "4090",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "02cffdc5d456506c2b0dbd91cdc31f2a4adf97f813f3173f87f3c160a0ece7d1",
+      "engine_sha256": "363f7961ad61c30a4240f9301c58aa1af4b5029ce1eff75f9fa3cf8b43b18237",
+      "frontend_sha256": "ef7cafd3b942279dc94e50de51e5cf6e9731156f00ed16a4606c9d163a59eb8e",
+      "stock_short": {
+        "pp": 17.88609832560559,
+        "decode": 9.261927262326136,
+        "e2e": 6.200684412222985,
+        "load": 106.90596882696263
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 14.676394821959548,
+        "elapsed_s": 206.68939124199096,
+        "prefill_tps": 15.739560212319063,
+        "decode_tps": 10.660736711395074,
+        "e2e_tps": 9.908587894587251,
+        "output_sha256": "713d72bbd6857774d7e72ebe28b7b342fc724b84b59959d9a3dd1cfb9f7a4d37"
+      },
+      "http_short": {
+        "pp": 17.803130549189863,
+        "decode": 7.579896278281116,
+        "e2e": 5.3940622318800235,
+        "load": 52.26252966601169
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 14.702415634994395,
+        "elapsed_s": 228.28027793898946,
+        "prefill_tps": 15.711703827102971,
+        "decode_tps": 9.584333833416164,
+        "e2e_tps": 8.971427661163755,
+        "output_sha256": "8fdd8d93e530cb81420b90016079e061babbe160748e0f23cf1510c0a1cc1a60"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.108152680221275,
+          "candidate_ppl": 8.108152680221275,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.50920245398773,
+          "candidate_accuracy": 0.50920245398773,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "78f237ee34facca30d6fa72e05bad3add37935028b5eef223f056212b68d1d31",
+            "78f237ee34facca30d6fa72e05bad3add37935028b5eef223f056212b68d1d31"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.70395468238476,
+          "candidate_ppl": 8.70395468238476,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.4675324675324675,
+          "candidate_accuracy": 0.4675324675324675,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "a2fbd990d514bf2f18c055d415b216965c8085ef0549d19ccf9a6f3ea2842ff0",
+            "a2fbd990d514bf2f18c055d415b216965c8085ef0549d19ccf9a6f3ea2842ff0"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 128,
+      "placement": "a6000",
+      "measured_mode": "a6000",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "02cffdc5d456506c2b0dbd91cdc31f2a4adf97f813f3173f87f3c160a0ece7d1",
+      "engine_sha256": "363f7961ad61c30a4240f9301c58aa1af4b5029ce1eff75f9fa3cf8b43b18237",
+      "frontend_sha256": "ef7cafd3b942279dc94e50de51e5cf6e9731156f00ed16a4606c9d163a59eb8e",
+      "stock_short": {
+        "pp": 25.042285197755714,
+        "decode": 13.098277463319342,
+        "e2e": 8.73970891429499,
+        "load": 53.1798068859498
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 11.792495817004237,
+        "elapsed_s": 152.44643154199002,
+        "prefill_tps": 19.58872859356105,
+        "decode_tps": 14.553449851573337,
+        "e2e_tps": 13.434227218601023,
+        "output_sha256": "9f951a1d1fa9fc9daaeab2d97f5849d33eea6d4390cf063a60f490c09bca2d45"
+      },
+      "http_short": {
+        "pp": 24.753197954244122,
+        "decode": 11.317545970369281,
+        "e2e": 7.8842746738639855,
+        "load": 52.95335108996369
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 11.755609441024717,
+        "elapsed_s": 169.0137208320084,
+        "prefill_tps": 19.650193480727285,
+        "decode_tps": 13.01684522643334,
+        "e2e_tps": 12.11735940678813,
+        "output_sha256": "05775a986abbe89826a4339684633839eb1f762590f0dd4b37be246069a341d9"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.010851009342874,
+          "candidate_ppl": 8.010851009342874,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.50920245398773,
+          "candidate_accuracy": 0.50920245398773,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "55d91f3a4f4c5ed5cac77f87b7ef2ccae07c43447b47d2f0803e732bd508b25d",
+            "55d91f3a4f4c5ed5cac77f87b7ef2ccae07c43447b47d2f0803e732bd508b25d"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.75523623921724,
+          "candidate_ppl": 8.75523623921724,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.461038961038961,
+          "candidate_accuracy": 0.461038961038961,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "db1c8ea1de84074b30a622fcd389e06540da74dcdf8a3cdc3bda131923171403",
+            "db1c8ea1de84074b30a622fcd389e06540da74dcdf8a3cdc3bda131923171403"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 128,
+      "placement": "4090-a6000",
+      "measured_mode": "4090-a6000",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "02cffdc5d456506c2b0dbd91cdc31f2a4adf97f813f3173f87f3c160a0ece7d1",
+      "engine_sha256": "363f7961ad61c30a4240f9301c58aa1af4b5029ce1eff75f9fa3cf8b43b18237",
+      "frontend_sha256": "ef7cafd3b942279dc94e50de51e5cf6e9731156f00ed16a4606c9d163a59eb8e",
+      "stock_short": {
+        "pp": 42.7143998199979,
+        "decode": 22.1900550494603,
+        "e2e": 14.839877425193263,
+        "load": 45.06636841996806
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 5.781515279028099,
+        "elapsed_s": 101.04825797001831,
+        "prefill_tps": 39.954923381060794,
+        "decode_tps": 21.487036736835904,
+        "e2e_tps": 20.267543856200422,
+        "output_sha256": "d81882312c42d8bdf2052087c66edf3a0e4716b54741fc27250f34bad067a2ae"
+      },
+      "http_short": {
+        "pp": 42.63925319410207,
+        "decode": 17.761733440964612,
+        "e2e": 12.719710151735002,
+        "load": 27.860409946995787
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 5.771350390976295,
+        "elapsed_s": 105.68530220800312,
+        "prefill_tps": 40.025294662610754,
+        "decode_tps": 20.48768344878302,
+        "e2e_tps": 19.378285884722704,
+        "output_sha256": "c3680ec359668bd760cd1d195f9585f4244e908d7f4d6b33a4081dd046897627"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 7.995726772360933,
+          "candidate_ppl": 7.995726772360933,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.50920245398773,
+          "candidate_accuracy": 0.50920245398773,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "643f0f2a6609ce7921c9ed475b93027b2fbda1bd9b2aa4d0953d894ec2a1a628",
+            "643f0f2a6609ce7921c9ed475b93027b2fbda1bd9b2aa4d0953d894ec2a1a628"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.972817633310038,
+          "candidate_ppl": 8.972817633310038,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.44805194805194803,
+          "candidate_accuracy": 0.44805194805194803,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "8698ea1d8f348b7f7a0907594a642ef94d20903bf45a0a6a95ce6cd16dbb58b3",
+            "8698ea1d8f348b7f7a0907594a642ef94d20903bf45a0a6a95ce6cd16dbb58b3"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 128,
+      "placement": "a6000-4090",
+      "measured_mode": "a6000-4090",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "02cffdc5d456506c2b0dbd91cdc31f2a4adf97f813f3173f87f3c160a0ece7d1",
+      "engine_sha256": "363f7961ad61c30a4240f9301c58aa1af4b5029ce1eff75f9fa3cf8b43b18237",
+      "frontend_sha256": "ef7cafd3b942279dc94e50de51e5cf6e9731156f00ed16a4606c9d163a59eb8e",
+      "stock_short": {
+        "pp": 42.10610539528225,
+        "decode": 18.415376554114786,
+        "e2e": 13.001849164113471,
+        "load": 26.435240314982366
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 5.863072542997543,
+        "elapsed_s": 111.05088333500316,
+        "prefill_tps": 39.39913727929066,
+        "decode_tps": 19.46042972647905,
+        "e2e_tps": 18.441996483916952,
+        "output_sha256": "98d8014cedf7a8069de09b78bcee27455c5bc1532e66155cd546ae3321c45bb3"
+      },
+      "http_short": {
+        "pp": 41.78629009598177,
+        "decode": 16.852506205641454,
+        "e2e": 12.179704156197177,
+        "load": 40.49776837095851
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 5.905235764046665,
+        "elapsed_s": 109.36333673499757,
+        "prefill_tps": 39.117828522006924,
+        "decode_tps": 19.78583996541742,
+        "e2e_tps": 18.72656834678139,
+        "output_sha256": "cb8b1bc3de0ec40bfa56901a2cea79dc87590454687f852c80a03766a369b14e"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.013014274419957,
+          "candidate_ppl": 8.013014274419957,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.5030674846625767,
+          "candidate_accuracy": 0.5030674846625767,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "b3a889182c85deefaa34da2ffaf93b30e990d33f5169e3e6525f2e1f88ecada4",
+            "b3a889182c85deefaa34da2ffaf93b30e990d33f5169e3e6525f2e1f88ecada4"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.80141578477683,
+          "candidate_ppl": 8.80141578477683,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.45454545454545453,
+          "candidate_accuracy": 0.45454545454545453,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "8ce865e16474117d66e06a480d895c78bc0f589fed0fd701dcfcbde1291e27bc",
+            "8ce865e16474117d66e06a480d895c78bc0f589fed0fd701dcfcbde1291e27bc"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 128,
+      "placement": "metal-auto",
+      "measured_mode": "metal-fixed-auto",
+      "auto_failure": {
+        "reason": "stock and fork failed to allocate the same automatic Metal expert buffer",
+        "requested_bytes": 70809722880,
+        "fork_status": 1,
+        "stock_log": "stock.log",
+        "fork_log": "http-load-only.log"
+      },
+      "source_revision": "4e47baf6467f7357393a231014b208a20b3c722b",
+      "oracle_sha256": "99f9c509d155eccf3b78b0eded3d0e6ece02d76c263cc9f88acbb865adecdaef",
+      "engine_sha256": "67371ca8f5446d02e36da78d6a4785151f87907dedb7d73d8e969e1a0ed33cdc",
+      "frontend_sha256": "30c8dad9dd1292dc6092ba5137383071f2b46a54f5883cf5831b665c304a199b",
+      "stock_short": {
+        "pp": 13.833143359605973,
+        "decode": 9.059644167315383,
+        "e2e": 5.573677557303887,
+        "load": 6.8111451249569654
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 16.687154458020814,
+        "elapsed_s": 216.68255191703793,
+        "prefill_tps": 13.842983270821707,
+        "decode_tps": 10.235235540455223,
+        "e2e_tps": 9.451614732616429,
+        "output_sha256": "be743518712a7a571bc72cf3eadcb485109cc4fe5e1ea0614f4e4c977c709770"
+      },
+      "http_short": {
+        "pp": 13.799468422377611,
+        "decode": 9.061239407102414,
+        "e2e": 5.568943117639558,
+        "load": 11.63866004103329
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 16.627999791991897,
+        "elapsed_s": 217.29257425002288,
+        "prefill_tps": 13.892230147323577,
+        "decode_tps": 10.201123081838597,
+        "e2e_tps": 9.425080479940902,
+        "output_sha256": "be743518712a7a571bc72cf3eadcb485109cc4fe5e1ea0614f4e4c977c709770"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.042170686934918,
+          "candidate_ppl": 8.042170686934918,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.50920245398773,
+          "candidate_accuracy": 0.50920245398773,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "9a3cebc44307baff5296e5236996b1f0f64dfc930d8975dbe6c5b38be9334dc9",
+            "9a3cebc44307baff5296e5236996b1f0f64dfc930d8975dbe6c5b38be9334dc9"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.863447351779195,
+          "candidate_ppl": 8.863447351779195,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.4675324675324675,
+          "candidate_accuracy": 0.4675324675324675,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "fb70f5c8621447c7235401357f3b672081af33ede427535fad2ff4fdf6bc884c",
+            "fb70f5c8621447c7235401357f3b672081af33ede427535fad2ff4fdf6bc884c"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 128,
+      "placement": "metal-cache32",
+      "measured_mode": "metal-cache32",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "99f9c509d155eccf3b78b0eded3d0e6ece02d76c263cc9f88acbb865adecdaef",
+      "engine_sha256": "0efaa9d65730f38bd8bc156982f0c2b4dcfc18adadbe5c6860ee5357f182b270",
+      "frontend_sha256": "30c8dad9dd1292dc6092ba5137383071f2b46a54f5883cf5831b665c304a199b",
+      "stock_short": {
+        "pp": 12.565842465905698,
+        "decode": 4.944619859625409,
+        "e2e": 3.598129174862276,
+        "load": 6.917655375087634
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 18.237353542004712,
+        "elapsed_s": 388.54560079204384,
+        "prefill_tps": 12.666311450724208,
+        "decode_tps": 5.527827195859959,
+        "e2e_tps": 5.270938586938536,
+        "output_sha256": "be743518712a7a571bc72cf3eadcb485109cc4fe5e1ea0614f4e4c977c709770"
+      },
+      "http_short": {
+        "pp": 12.506228675073402,
+        "decode": 4.947446981254956,
+        "e2e": 3.5948913865538294,
+        "load": 4.571339957998134
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 17.927211874979548,
+        "elapsed_s": 335.72808062506374,
+        "prefill_tps": 12.8854392758307,
+        "decode_tps": 6.441143852829748,
+        "e2e_tps": 6.100174868265419,
+        "output_sha256": "be743518712a7a571bc72cf3eadcb485109cc4fe5e1ea0614f4e4c977c709770"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.042170686934918,
+          "candidate_ppl": 8.042170686934918,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.50920245398773,
+          "candidate_accuracy": 0.50920245398773,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "9a3cebc44307baff5296e5236996b1f0f64dfc930d8975dbe6c5b38be9334dc9",
+            "9a3cebc44307baff5296e5236996b1f0f64dfc930d8975dbe6c5b38be9334dc9"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.863447351779195,
+          "candidate_ppl": 8.863447351779195,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.4675324675324675,
+          "candidate_accuracy": 0.4675324675324675,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "fb70f5c8621447c7235401357f3b672081af33ede427535fad2ff4fdf6bc884c",
+            "fb70f5c8621447c7235401357f3b672081af33ede427535fad2ff4fdf6bc884c"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    },
+    {
+      "quant": 128,
+      "placement": "metal-cache12",
+      "measured_mode": "metal-cache12",
+      "source_revision": "f799047c4",
+      "oracle_sha256": "99f9c509d155eccf3b78b0eded3d0e6ece02d76c263cc9f88acbb865adecdaef",
+      "engine_sha256": "0efaa9d65730f38bd8bc156982f0c2b4dcfc18adadbe5c6860ee5357f182b270",
+      "frontend_sha256": "30c8dad9dd1292dc6092ba5137383071f2b46a54f5883cf5831b665c304a199b",
+      "stock_short": {
+        "pp": 13.097998912567261,
+        "decode": 6.0314043903293015,
+        "e2e": 4.192583341963019,
+        "load": 4.316199249937199
+      },
+      "stock_sustained": {
+        "n": 2048,
+        "ttft_s": 17.1836612499319,
+        "elapsed_s": 364.5477814159822,
+        "prefill_tps": 13.443002433542237,
+        "decode_tps": 5.8929517505189475,
+        "e2e_tps": 5.6179192533969795,
+        "output_sha256": "be743518712a7a571bc72cf3eadcb485109cc4fe5e1ea0614f4e4c977c709770"
+      },
+      "http_short": {
+        "pp": 13.1588738282334,
+        "decode": 5.919691947221726,
+        "e2e": 4.144313032351596,
+        "load": 4.0903648340608925
+      },
+      "http_sustained": {
+        "n": 2048,
+        "ttft_s": 18.379762207972817,
+        "elapsed_s": 388.3230023329379,
+        "prefill_tps": 12.568171306361965,
+        "decode_tps": 5.533283801663566,
+        "e2e_tps": 5.273960047939934,
+        "output_sha256": "be743518712a7a571bc72cf3eadcb485109cc4fe5e1ea0614f4e4c977c709770"
+      },
+      "quality": {
+        "ledger": {
+          "positions": 163,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.042170686934918,
+          "candidate_ppl": 8.042170686934918,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.50920245398773,
+          "candidate_accuracy": 0.50920245398773,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "9a3cebc44307baff5296e5236996b1f0f64dfc930d8975dbe6c5b38be9334dc9",
+            "9a3cebc44307baff5296e5236996b1f0f64dfc930d8975dbe6c5b38be9334dc9"
+          ]
+        },
+        "museum": {
+          "positions": 154,
+          "mean_kl_nats": 0.0,
+          "max_kl_nats": 0.0,
+          "mean_tv": 0.0,
+          "max_tv": 0.0,
+          "mean_sampled_tv": 0.0,
+          "max_sampled_tv": 0.0,
+          "oracle_ppl": 8.863447351779195,
+          "candidate_ppl": 8.863447351779195,
+          "top1_agreement": 1.0,
+          "oracle_accuracy": 0.4675324675324675,
+          "candidate_accuracy": 0.4675324675324675,
+          "passed": true,
+          "bit_identical": true,
+          "logit_hashes": [
+            "fb70f5c8621447c7235401357f3b672081af33ede427535fad2ff4fdf6bc884c",
+            "fb70f5c8621447c7235401357f3b672081af33ede427535fad2ff4fdf6bc884c"
+          ]
+        }
+      },
+      "all_identical": true,
+      "passed": true
+    }
+  ],
+  "cross_quant": {
+    "cuda": {
+      "64": {
+        "reference": 128,
+        "placement": "4090-a6000",
+        "cases": {
+          "ledger": {
+            "positions": 163,
+            "mean_kl_nats": 0.20742403085383887,
+            "max_kl_nats": 1.12375162971053,
+            "mean_tv": 0.19255792487836682,
+            "max_tv": 0.6019152158592599,
+            "mean_sampled_tv": 0.19458900218215278,
+            "max_sampled_tv": 0.6414291292912376,
+            "oracle_ppl": 7.995726772360933,
+            "candidate_ppl": 7.430196673663612,
+            "top1_agreement": 0.7607361963190185,
+            "oracle_accuracy": 0.50920245398773,
+            "candidate_accuracy": 0.5214723926380368
+          },
+          "museum": {
+            "positions": 154,
+            "mean_kl_nats": 0.21327612299627904,
+            "max_kl_nats": 1.6725374044755832,
+            "mean_tv": 0.19313186257831694,
+            "max_tv": 0.6926249299243925,
+            "mean_sampled_tv": 0.19523708358307099,
+            "max_sampled_tv": 0.7480942398473716,
+            "oracle_ppl": 8.972817633310038,
+            "candidate_ppl": 8.483685223478128,
+            "top1_agreement": 0.7532467532467533,
+            "oracle_accuracy": 0.44805194805194803,
+            "candidate_accuracy": 0.461038961038961
+          }
+        },
+        "pooled": {
+          "positions": 317,
+          "mean_kl_nats": 0.2102670030618382,
+          "mean_tv": 0.19283674634774323,
+          "top1_agreement": 0.7570977917981073,
+          "candidate_accuracy": 0.4921135646687697,
+          "oracle_accuracy": 0.4794952681388013,
+          "candidate_ppl": 7.924556861791865,
+          "oracle_ppl": 8.456343337249061
+        }
+      },
+      "96": {
+        "reference": 128,
+        "placement": "4090-a6000",
+        "cases": {
+          "ledger": {
+            "positions": 163,
+            "mean_kl_nats": 0.05278136041519198,
+            "max_kl_nats": 0.5466578964621687,
+            "mean_tv": 0.09115713352482198,
+            "max_tv": 0.45927074709228094,
+            "mean_sampled_tv": 0.09144402755460097,
+            "max_sampled_tv": 0.509169965591798,
+            "oracle_ppl": 7.995726772360933,
+            "candidate_ppl": 7.8041179814956685,
+            "top1_agreement": 0.8711656441717791,
+            "oracle_accuracy": 0.50920245398773,
+            "candidate_accuracy": 0.5214723926380368
+          },
+          "museum": {
+            "positions": 154,
+            "mean_kl_nats": 0.06923533540704295,
+            "max_kl_nats": 0.7168194479392735,
+            "mean_tv": 0.10530116211965934,
+            "max_tv": 0.5178034890191401,
+            "mean_sampled_tv": 0.10768905063606014,
+            "max_sampled_tv": 0.5629847002786083,
+            "oracle_ppl": 8.972817633310038,
+            "candidate_ppl": 9.257098912936291,
+            "top1_agreement": 0.8701298701298701,
+            "oracle_accuracy": 0.44805194805194803,
+            "candidate_accuracy": 0.461038961038961
+          }
+        },
+        "pooled": {
+          "positions": 317,
+          "mean_kl_nats": 0.06077477413363062,
+          "mean_tv": 0.0980283650819354,
+          "top1_agreement": 0.8706624605678233,
+          "candidate_accuracy": 0.4921135646687697,
+          "oracle_accuracy": 0.4794952681388013,
+          "candidate_ppl": 8.479041238108968,
+          "oracle_ppl": 8.456343337249061
+        }
+      }
+    },
+    "metal": {
+      "64": {
+        "reference": 128,
+        "placement": "metal-cache12",
+        "cases": {
+          "ledger": {
+            "positions": 163,
+            "mean_kl_nats": 0.20892478731459052,
+            "max_kl_nats": 0.9718718328983322,
+            "mean_tv": 0.19319750184998444,
+            "max_tv": 0.615987293542486,
+            "mean_sampled_tv": 0.19482456469250034,
+            "max_sampled_tv": 0.6460120248239059,
+            "oracle_ppl": 8.042170686934918,
+            "candidate_ppl": 7.385537668072144,
+            "top1_agreement": 0.7607361963190185,
+            "oracle_accuracy": 0.50920245398773,
+            "candidate_accuracy": 0.5276073619631901
+          },
+          "museum": {
+            "positions": 154,
+            "mean_kl_nats": 0.21012429185063344,
+            "max_kl_nats": 1.9771015905183245,
+            "mean_tv": 0.1909976377357379,
+            "max_tv": 0.7151543730543666,
+            "mean_sampled_tv": 0.1927589692564962,
+            "max_sampled_tv": 0.7708186884406069,
+            "oracle_ppl": 8.863447351779195,
+            "candidate_ppl": 8.35420264542512,
+            "top1_agreement": 0.7922077922077922,
+            "oracle_accuracy": 0.4675324675324675,
+            "candidate_accuracy": 0.474025974025974
+          }
+        },
+        "pooled": {
+          "positions": 317,
+          "mean_kl_nats": 0.20950751191569655,
+          "mean_tv": 0.19212879814779527,
+          "top1_agreement": 0.77602523659306,
+          "candidate_accuracy": 0.501577287066246,
+          "oracle_accuracy": 0.48895899053627756,
+          "candidate_ppl": 7.841222418518022,
+          "oracle_ppl": 8.43118283076594
+        }
+      },
+      "96": {
+        "reference": 128,
+        "placement": "metal-cache12",
+        "cases": {
+          "ledger": {
+            "positions": 163,
+            "mean_kl_nats": 0.050561115851007435,
+            "max_kl_nats": 0.384256603335436,
+            "mean_tv": 0.08944872117410715,
+            "max_tv": 0.3654353913679412,
+            "mean_sampled_tv": 0.08957408108489824,
+            "max_sampled_tv": 0.3946822667837871,
+            "oracle_ppl": 8.042170686934918,
+            "candidate_ppl": 7.711637112176655,
+            "top1_agreement": 0.8957055214723927,
+            "oracle_accuracy": 0.50920245398773,
+            "candidate_accuracy": 0.5214723926380368
+          },
+          "museum": {
+            "positions": 154,
+            "mean_kl_nats": 0.07097422018969317,
+            "max_kl_nats": 0.5283340714325465,
+            "mean_tv": 0.10717495092162477,
+            "max_tv": 0.42225981243875443,
+            "mean_sampled_tv": 0.1090728576117206,
+            "max_sampled_tv": 0.44092725491348245,
+            "oracle_ppl": 8.863447351779195,
+            "candidate_ppl": 9.158884459114589,
+            "top1_agreement": 0.8376623376623377,
+            "oracle_accuracy": 0.4675324675324675,
+            "candidate_accuracy": 0.474025974025974
+          }
+        },
+        "pooled": {
+          "positions": 317,
+          "mean_kl_nats": 0.06047789209125224,
+          "mean_tv": 0.09806020187163937,
+          "top1_agreement": 0.8675078864353313,
+          "candidate_accuracy": 0.49842271293375395,
+          "oracle_accuracy": 0.48895899053627756,
+          "candidate_ppl": 8.383671044459232,
+          "oracle_ppl": 8.43118283076594
+        }
+      }
+    }
+  },
+  "heldout": {
+    "fixture": {
+      "dataset_commit": "927b3642933080f1b0e811e2f916e14c292992f9",
+      "test_sha256": "173c87a53759e0201f33e0ccf978e510c2042d7f2cb78229d9a50d79b9e7dd08",
+      "eligible_articles": 58,
+      "selection": "first, second, third, and fourth quartile starts in eligible article order",
+      "warm_tokens": 128,
+      "targets_per_article": 512,
+      "articles": [
+        {
+          "title": "Robert Boulter",
+          "token_ids_sha256": "34dc41e9a42c19aaf6ff3f4242a3a055d1d61266bbab98f40fc6d720c647a764"
+        },
+        {
+          "title": "Ben Amos",
+          "token_ids_sha256": "2eacb7a8ac8e87f3c0a0dd0d3668084e5d628f69dd01a5f1eb5e6ab81a86ba40"
+        },
+        {
+          "title": "Light Tank Mk VII Tetrarch",
+          "token_ids_sha256": "751378cfc8c7d831fdffb86ef6143d7341ab8659303ba27bf421801a52cdc7fe"
+        },
+        {
+          "title": "View of the World from 9th Avenue",
+          "token_ids_sha256": "0a500f3204a30459b5ce78cb6dfb1befb8cd9da1ce86d29b8812a29dc845c1f3"
+        }
+      ]
+    },
+    "packs": {
+      "64": {
+        "n": 2048,
+        "pooled": {
+          "kl": 0.8173967548503436,
+          "nll": 2.55772049943921,
+          "accuracy": 0.5234375,
+          "agreement": 0.703125,
+          "ppl": 12.906363695243734
+        },
+        "articles": [
+          {
+            "title": "Robert Boulter",
+            "n": 512,
+            "kl": 1.2430121081809857,
+            "nll": 2.617827688640538,
+            "ppl": 13.705917702253554,
+            "accuracy": 0.552734375,
+            "agreement": 0.66796875
+          },
+          {
+            "title": "Ben Amos",
+            "n": 512,
+            "kl": 0.6947294862682843,
+            "nll": 2.4449081512501567,
+            "ppl": 11.529490580908671,
+            "accuracy": 0.509765625,
+            "agreement": 0.73046875
+          },
+          {
+            "title": "Light Tank Mk VII Tetrarch",
+            "n": 512,
+            "kl": 0.6497324673800793,
+            "nll": 2.122340733312247,
+            "ppl": 8.350661299838473,
+            "accuracy": 0.560546875,
+            "agreement": 0.720703125
+          },
+          {
+            "title": "View of the World from 9th Avenue",
+            "n": 512,
+            "kl": 0.6821129575720246,
+            "nll": 3.045805424553899,
+            "ppl": 21.026960014413575,
+            "accuracy": 0.470703125,
+            "agreement": 0.693359375
+          }
+        ]
+      },
+      "96": {
+        "n": 2048,
+        "pooled": {
+          "kl": 0.27671083108871114,
+          "nll": 2.7661958156156907,
+          "accuracy": 0.52392578125,
+          "agreement": 0.82568359375,
+          "ppl": 15.89803975243861
+        },
+        "articles": [
+          {
+            "title": "Robert Boulter",
+            "n": 512,
+            "kl": 0.3211945227601598,
+            "nll": 2.9500537883540408,
+            "ppl": 19.10698143367411,
+            "accuracy": 0.544921875,
+            "agreement": 0.853515625
+          },
+          {
+            "title": "Ben Amos",
+            "n": 512,
+            "kl": 0.3136051860618015,
+            "nll": 2.740601421501208,
+            "ppl": 15.496302103609175,
+            "accuracy": 0.517578125,
+            "agreement": 0.826171875
+          },
+          {
+            "title": "Light Tank Mk VII Tetrarch",
+            "n": 512,
+            "kl": 0.1672267496912818,
+            "nll": 2.1038937732104768,
+            "ppl": 8.198029112201748,
+            "accuracy": 0.576171875,
+            "agreement": 0.83984375
+          },
+          {
+            "title": "View of the World from 9th Avenue",
+            "n": 512,
+            "kl": 0.30481686584160145,
+            "nll": 3.2702342793970374,
+            "ppl": 26.317504270111954,
+            "accuracy": 0.45703125,
+            "agreement": 0.783203125
+          }
+        ]
+      },
+      "128": {
+        "n": 2048,
+        "pooled": {
+          "kl": 0.0,
+          "nll": 2.795345121178207,
+          "accuracy": 0.53076171875,
+          "agreement": 1.0,
+          "ppl": 16.36827681744831
+        },
+        "articles": [
+          {
+            "title": "Robert Boulter",
+            "n": 512,
+            "kl": 0.0,
+            "nll": 2.865765386005764,
+            "ppl": 17.562490145891243,
+            "accuracy": 0.55078125,
+            "agreement": 1.0
+          },
+          {
+            "title": "Ben Amos",
+            "n": 512,
+            "kl": 0.0,
+            "nll": 2.7910676150788865,
+            "ppl": 16.29841094590044,
+            "accuracy": 0.529296875,
+            "agreement": 1.0
+          },
+          {
+            "title": "Light Tank Mk VII Tetrarch",
+            "n": 512,
+            "kl": 0.0,
+            "nll": 2.0135214305551865,
+            "ppl": 7.48964522976744,
+            "accuracy": 0.5859375,
+            "agreement": 1.0
+          },
+          {
+            "title": "View of the World from 9th Avenue",
+            "n": 512,
+            "kl": 0.0,
+            "nll": 3.511026053072993,
+            "ppl": 33.482605094830106,
+            "accuracy": 0.45703125,
+            "agreement": 1.0
+          }
+        ]
+      }
+    }
+  }
+}

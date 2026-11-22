@@ -39,6 +39,8 @@ CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES="$GPU_4090_UUID,$GPU_A6000_UUI
 
 The loader should report all 20,992 experts in VRAM and zero on the CPU for this pair. The SQ-128 pack leaves 43.56 GB of experts on the CPU. For the measured long-context configuration, use `--ctx 131072 --chunk 1024`. The [CUDA experiment log](../bench/hy4-performance/UNBIASEDSTRATA.md) records the throughput and numerical comparisons.
 
+Across all three text packs, the 4090 was faster as the primary GPU. With SQ-64 it sustained 88.9 output tokens/s, compared with 72.1 with the A6000 primary. The full measurements include both single GPUs, both GPU orders, three Metal cache settings, and the quality tradeoff between packs. [Pack measurements](../bench/hy4-performance/PACKS.md)
+
 ### Matching the CUDA oracle on an A6000
 
 Strata engine 0.1.64 ships cuBLAS and cuBLASLt 12.9.2. On an RTX A6000, the same SQ-64 ledger prompt produced mean KL 0.002865 when the source build loaded system cuBLAS 12.4.5. Each executable reproduced its own logits in a fresh process. Launching the source build with the publisher’s libraries made all 163 scored logit vectors bit-identical to stock. With the A6000 primary and the 4090 secondary, this also gave identical SQ-128 logits at all 317 targets in the two conversations. [Repeat controls and logit hashes](../bench/hy4-performance/ampere-cublas.json)
