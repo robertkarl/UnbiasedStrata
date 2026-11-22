@@ -108,8 +108,15 @@ def main():
             for _ in range(opt.trials):
                 rows.append(trial(child,ids,opt.generate,opt.temperature,wire,tokens))
                 write_json(opt.out/"trials.json",rows)
-            child.stdin.write("QUIT\n");child.stdin.flush()
-            if child.wait(timeout=90): raise RuntimeError("unclean exit")
+            child.stdin.write("QUIT\n")
+            child.stdin.close()
+            try:
+                exit_code=child.wait(timeout=15)
+                shutdown={"returncode":exit_code}
+            except subprocess.TimeoutExpired:
+                child.terminate()
+                shutdown={"timed_out_after_done":True,"returncode":child.wait(timeout=30)}
+            write_json(opt.out/"shutdown.json",shutdown)
         finally:
             if child.poll() is None:
                 child.terminate();child.wait(timeout=90)
