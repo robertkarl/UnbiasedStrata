@@ -116,7 +116,7 @@ inline bool parse_gen(const std::string& line, GenReq& r, std::string& err) {
         double d = atof(val.c_str());
         if (key == "temperature") r.s.temperature = (float)d;
         else if (key == "top_p") r.s.top_p = (float)d;
-        else if (key == "top_k") r.s.top_k = std::max(1, std::min(64, (int)d));
+        else if (key == "top_k") r.s.top_k = std::max(0, (int)d);
         else if (key == "min_p") r.s.min_p = (float)d;
         else if (key == "penalty_repeat") r.s.rep = (float)d;
         else if (key == "penalty_freq") r.s.freq = (float)d;
@@ -150,6 +150,11 @@ inline bool parse_gen(const std::string& line, GenReq& r, std::string& err) {
 // ---- sampling on the host from the fp32 logits of the last position ----------------------------------------------------------------------------------------
 // order: penalties on the logits, top-k candidates (<= 64), temperature softmax, min_p, top_p, draw
 inline int sample_host(float* lg, int V, const SampleOpts& s, const std::vector<int32_t>& hist, std::mt19937_64& rng) {
+    if (s.top_k <= 0 || s.top_k > 64) {
+        SparseDist dist;
+        compute_dist_full(lg, V, s, hist, dist);
+        return sample_from_dist(dist, rng);
+    }
     if (s.penalties() && s.last_n > 0) {
         size_t from = hist.size() > (size_t)s.last_n ? hist.size() - (size_t)s.last_n : 0;
         std::unordered_map<int32_t, int> count;
@@ -161,7 +166,7 @@ inline int sample_host(float* lg, int V, const SampleOpts& s, const std::vector<
             x -= (float)kv.second * s.freq + (s.pres != 0.f ? s.pres : 0.f);
         }
     }
-    int K = std::min(std::max(1, s.top_k), 64);
+    int K = std::min(V, s.top_k);
     std::vector<int> idx(V);
     std::iota(idx.begin(), idx.end(), 0);
     std::partial_sort(idx.begin(), idx.begin() + K, idx.end(), [&](int a, int b) { return lg[a] > lg[b] || (lg[a] == lg[b] && a < b); });

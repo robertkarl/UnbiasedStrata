@@ -396,15 +396,7 @@ public:
                             hit = c;
                             break;
                         }
-                        double z = 0.0;
-                        for (auto& kv : p_res) {
-                            const double diff = kv.second - dist_prob_of(q_c, kv.first);
-                            kv.second = diff > 0.0 ? diff : 0.0;
-                            z += kv.second;
-                        }
-                        if (z > 1e-15) {
-                            for (auto& kv : p_res) kv.second /= z;
-                        } else {
+                        if (!subtract_draft(p_res, q_c, V)) {
                             compute_dist_full(h_vlogits.data() + (size_t)u * V, V, *samp, cur_hist, p_res);
                         }
                     }

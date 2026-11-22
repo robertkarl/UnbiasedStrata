@@ -79,10 +79,16 @@ The rates below are median tokens per second. Native rows use engine timings. HT
 | DFly2, native runner | 42.35 | 41.72 | 15.08 | 15.00 |
 | DFly2, streamed HTTP | 42.34 | 36.98 | 14.61 | 15.07 |
 
-All measured runs returned the same 32 greedy token IDs across engines, HTTP and draft settings. Both HTTP chat requests answered `4` and both servers exited cleanly after the streamed requests. The largest throughput difference was 12.7% on DFly2 HTTP prompt processing. These figures cover SQ-64 on Metal. The SQ-96 and SQ-128 checks covered their manifests. Available CUDA cards were serving other models, so the CUDA checks below cover kernels and builds.
+All measured runs returned the same 32 greedy token IDs across engines, HTTP and draft settings. Both HTTP chat requests answered `4` and both servers exited cleanly after the streamed requests. The largest throughput difference was 12.7% on DFly2 HTTP prompt processing. These oracle comparisons cover SQ-64 on Metal. SQ-96 was checked at the manifest level. The CUDA checks and serving measurements follow.
 
 ### Backend checks
 
 CUDA 12.4 with GCC 13 built the runner for `sm_75`, `sm_86` and `sm_89`. On an RTX 3090 Ti, upstream’s `sk_test --random-only` passed 74 matrix and embedding checks against CPU dequantization. Upstream’s `mla_test` passed 31 attention checks, including the real SQ-64 layer 5 sparse and layer 2 sliding-window projection, norm and sink tensors. Both tests linked this fork’s imported sources. Only the required tensors were transferred to the CUDA host.
 
 The M3 Ultra passed the upstream attention and routing test and all 24 matrix checks on eight real SQ-64 trunk tensors. `make test` passed the existing adapter, literal handling, picture cache and HTTP regression tests. A controlled Hy4 tool-call reply also produced separate reasoning and a parsed OpenAI function call with the expected argument.
+
+## Regina CUDA runs
+
+The Qwen3.8-Flash-Next GSQ-RCO IQ3_XXS comparison used the same front end and the branch’s QFN engine on an RTX 4090, with a 131,072-token context, Q4 KV and MTP. Two 5,573-token inventory requests ran at 956 and 1,013 prompt tokens/s and 50.9 and 55.1 generated tokens/s. Both answers included the requested inventory count and over 1,100 visible answer tokens. A tool-call round trip returned the expected lookup result. The four Regina pilot tasks all earned full credit. The first two scored BBW tasks earned 3/3 and 6/6 on file-ring and file-ring-traverse.
+
+Hy4 supports full-vocabulary sampling with `top_k=0` on both backends. Direct native requests that omit top-k keep Strata’s default of 64. The same sampling distribution applies to plain generation and DFly2 target verification.

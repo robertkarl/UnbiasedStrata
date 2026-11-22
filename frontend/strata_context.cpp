@@ -383,8 +383,9 @@ struct strata_context_impl {
         if (s.temp > 0.0f) {
             std::snprintf(b, sizeof b, " temperature=%g", (double) s.temp); h += b;
             if (s.top_p > 0.0f && s.top_p < 1.0f) { std::snprintf(b, sizeof b, " top_p=%g", (double) s.top_p); h += b; }
-            // strata's sampled path takes top_k in 1..64; 0 means "whole vocabulary" to llama.cpp
-            int32_t top_k = s.top_k <= 0 ? 64 : std::min<int32_t>(s.top_k, 64);
+            // Hy4 accepts 0 for the entire vocabulary. The other engines accept 1..64.
+            int32_t top_k = std::max<int32_t>(0, s.top_k);
+            if (!engine_is_hy4) top_k = top_k == 0 ? 64 : std::min<int32_t>(top_k, 64);
             std::snprintf(b, sizeof b, " top_k=%d", top_k); h += b;
             if (s.min_p > 0.0f) { std::snprintf(b, sizeof b, " min_p=%g", (double) s.min_p); h += b; }
             if (s.seed != LLAMA_DEFAULT_SEED) { std::snprintf(b, sizeof b, " seed=%u", s.seed); h += b; }
