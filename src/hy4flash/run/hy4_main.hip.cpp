@@ -892,11 +892,16 @@ int main(int argc, char** argv) {
             for (uint64_t hv : sp.hsh) fh << std::hex << hv << '\n';
         }
     } else if (gen > 0) {
-        int next = 0;
-        {
-            const float* lg = &hl[(size_t)(hl.size() / V - 1) * V];
-            next = (int)(std::max_element(lg, lg + V) - lg);
-        }
+        const bool sample = !cli_samp.greedy() || cli_samp.penalties();
+        std::mt19937_64 rng(cli_samp.has_seed ? cli_samp.seed : 20261120ULL);
+        SparseDist dist;
+        auto draw = [&](const float* row) {
+            compute_dist_full(row, V, cli_samp, tok, dist);
+            return sample_from_dist(dist, rng);
+        };
+        const float* initial = hl.data() + hl.size() - V;
+        int next = sample ? draw(initial) : (int)(std::max_element(initial, initial + V) - initial);
+        std::vector<float> host_row(sample || want_margins ? V : 0);
         if (dfly_warm && df.ok) {
             // test: run the drafter once (all stages) before the plain decode, to compare plain decode with / without the drafter's kernels having run
             int yy[9] = {};
@@ -937,15 +942,16 @@ int main(int argc, char** argv) {
             enq.push_back(now_s() - ts);
             HCK(hipStreamSynchronize(r.st)); r.pflush();
             float* d = r.logits;
-            if (want_margins) {
-                std::vector<float> hrow(V);
-                HCK(hipMemcpy(hrow.data(), d, (size_t)V * 4, hipMemcpyDeviceToHost));
-                margs.push_back(gap2(hrow.data()));
+            if (sample || want_margins) {
+                HCK(hipMemcpy(host_row.data(), d, (size_t)V * sizeof(float), hipMemcpyDeviceToHost));
+                if (want_margins) margs.push_back(gap2(host_row.data()));
             }
-            hipLaunchKernelGGL(k_argmax, dim3(1), dim3(1024), 0, r.st, d, V, r.d_argmax);
-            int32_t nx = 0;
-            HCK(hipMemcpy(&nx, r.d_argmax, 4, hipMemcpyDeviceToHost));
-            next = nx;
+            if (sample) {
+                next = draw(host_row.data());
+            } else {
+                hipLaunchKernelGGL(k_argmax, dim3(1), dim3(1024), 0, r.st, d, V, r.d_argmax);
+                HCK(hipMemcpy(&next, r.d_argmax, sizeof(next), hipMemcpyDeviceToHost));
+            }
             times.push_back(now_s() - ts);
         }
         double td = now_s() - t1;
