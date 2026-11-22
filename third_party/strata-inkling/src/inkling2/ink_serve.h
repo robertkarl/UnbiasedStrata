@@ -441,7 +441,7 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
     };
 
     auto finish_req = [&](ActiveReq& rq, const char* reason) {
-        if (!rq.img_embeds.empty()) rq.cached_prefix.clear();
+        if (!rq.img_embeds.empty() || std::string(reason) == "nonfinite") rq.cached_prefix.clear();
         const double dec_ms = (rq.decode_t0 > 0.0) ? (now_s() - rq.decode_t0) * 1000.0 : 0.0;
         if (rq.is_solo) {
             proto("DONE %d %d %.1f %.1f %s", rq.generated, rq.prompt_len, rq.prompt_ms, dec_ms, reason);
@@ -787,11 +787,10 @@ inline int run_serve_loop(const ServeConfig& cfg, InkModelFile& mf, InkBackend& 
                         break;
                     }
                 }
+                if ((!done || fin) && accepted <= nd) {
+                    backend.rollback_slot(rq.slot, rq.cur_pos + accepted);
+                }
                 if (!done) {
-                    if (accepted <= nd) {
-                        // Rolled back to anchor + accepted tokens
-                        backend.rollback_slot(rq.slot, rq.cur_pos + accepted);
-                    }
                     rq.cur_pos += accepted;
                 } else if (fin) {
                     finish_req(rq, fin);

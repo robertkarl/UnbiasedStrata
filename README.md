@@ -168,6 +168,8 @@ For CUDA speculative decoding, append `--draft /models/mtp.safetensors` after th
 from Thinking Machines' Inkling-2-Mini checkpoint.
 To check tokenization, streamed responses, and tool-call round trips on a machine without CUDA, run
 `make frontend` and `python3 frontend/tests/inkling_chat.py build-frontend/bin/unbiased-strata "$MODEL"`. Add the projector path as the last argument to test image input.
+Inkling sampling supports temperature, top-p, min-p and a seed. Top-k defaults to the server setting. A value of zero uses the full candidate buffer (1,000 on CUDA and 128 on Metal). The HTTP API rejects logit bias and ignore-EOS on both backends. Repetition, frequency and presence penalties are available on Metal.
+
 [A6000 and Debra correctness and performance measurements](bench/inkling/README.md) ·
 [Engine source and model configuration](https://github.com/alesha-pro/maya-inkling-mini/blob/e819852f822479af783638a467bfdfe2ed6882ec/docs/INKLING2-MINI.md)
 

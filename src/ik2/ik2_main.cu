@@ -2899,7 +2899,7 @@ void block_rollback(int n) {
 void embed_row(Model& M, int t, float* raw, float* out);
 
 struct SampleCfg {   // temp <= 0: greedy
-    double temp = 0, top_p = 1;
+    double temp = 0, top_p = 1, min_p = 0;
     int top_k = 0;
     std::mt19937_64* rng = nullptr;
 };
@@ -2923,6 +2923,7 @@ std::vector<std::pair<int, double>> sample_dist(std::vector<std::pair<float, int
             break;
         }
     }
+    while (keep > 1 && pr[keep - 1] < sc.min_p * pr[0]) --keep;
     double zk = 0;
     for (int j = 0; j < keep; ++j) zk += pr[j];
     std::vector<std::pair<int, double>> out(keep);
@@ -5386,7 +5387,7 @@ int main(int argc, char** argv) {
             std::istringstream in(line);
             std::string cmd, stops_s, ids_s, emb_path;
             int max_new = 0, top_k = 0;
-            double temp = 0, top_p = 1;
+            double temp = 0, top_p = 1, min_p = 0;
             long long seed = -1;
             in >> cmd;
             if (cmd == "QUIT") {
@@ -5419,6 +5420,7 @@ int main(int argc, char** argv) {
                     const std::string k = w.substr(0, eq), v = w.substr(eq + 1);
                     if (k == "temperature") temp = std::atof(v.c_str());
                     else if (k == "top_p") top_p = std::atof(v.c_str());
+                    else if (k == "min_p") min_p = std::atof(v.c_str());
                     else if (k == "top_k") top_k = std::atoi(v.c_str());
                     else if (k == "seed") seed = std::atoll(v.c_str());
                 }
@@ -5586,6 +5588,7 @@ int main(int argc, char** argv) {
                         break;
                     }
                 }
+                while (keep > 1 && pr[keep - 1] < min_p * pr[0]) --keep;
                 double zk = 0;
                 for (int j = 0; j < keep; ++j) zk += pr[j];
                 double u = std::uniform_real_distribution<double>(0, zk)(rng);
@@ -5670,7 +5673,7 @@ int main(int argc, char** argv) {
                 const int B = spec_on ? sctl.choose(std::min(max_new - i - 1, ctx - (int) hist.size())) : 1;
                 if (B >= 2) {
                     SampleCfg sc;
-                    sc.temp = temp, sc.top_p = top_p, sc.top_k = top_k, sc.rng = &rng;
+                    sc.temp = temp, sc.top_p = top_p, sc.min_p = min_p, sc.top_k = top_k, sc.rng = &rng;
                     std::vector<int> next;
                     const double ts = now();
                     spec_step(M, drafter, tok, (int) hist.size(), B, sc, stops, next);
