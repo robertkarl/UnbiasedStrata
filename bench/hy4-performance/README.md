@@ -1,5 +1,7 @@
 # Hy4 CUDA performance trials
 
+See the [measured results](RESULTS.md) for the three-run confirmation and same-prompt checkpoint comparison.
+
 All measurements concern one request at a time. The stock engine is the unmodified Linux x86-64 CUDA 12 package from Strata v0.2.18, engine v0.1.64, source `6e38f588a646`, built with CUDA 12.9. Its executable SHA-256 is `02cffdc5d456506c2b0dbd91cdc31f2a4adf97f813f3173f87f3c160a0ece7d1`. [Release](https://github.com/Niko1221/Strata/releases/tag/v0.2.18)
 
 The reference uses SQ-64, DFly2, two 32 GB Tesla V100s and a 4K context. Strata reports 1,068 prompt tokens/s and 41.8 decode tokens/s. The card does not specify its prompt text, generation length, sampling settings, or statistic for this row. Our host has a 24 GB RTX 4090, 48 GB RTX A6000, i9-9900K and 114 GiB guest RAM. The comparison measures speed on different hardware. [Model card](https://huggingface.co/strata-engine/Hy4-Flash-Strata#performance-with-strata)

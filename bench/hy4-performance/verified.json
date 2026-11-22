@@ -1,0 +1,284 @@
+{
+  "reference": {
+    "url": "https://huggingface.co/strata-engine/Hy4-Flash-Strata#performance-with-strata",
+    "devices": "2 \u00d7 Tesla V100 32 GB",
+    "context": 4096,
+    "pack": "SQ-64",
+    "pp_tps": 1068,
+    "tg_tps": 41.8
+  },
+  "release": "https://github.com/Niko1221/Strata/releases/tag/v0.2.18",
+  "devices_in_order": [
+    "RTX 4090 24 GB",
+    "RTX A6000 48 GB"
+  ],
+  "checkpoint_sha256": {
+    "Hy4-Flash-Engram-Q8.strata": "ab0cf9b3f9c64bd25f6212d4508e7443ab8b9bc133fbccc7bdfb83510a20c2c1",
+    "Hy4-Flash-SQ-128.strata": "6e8ba2729465f38ed42b5bfa7db02c92beddc25ca0413b7f0c24ab9f1e8b51f4",
+    "Hy4-Flash-SQ-64.strata": "b2cc38fe4bded35df82a701f9e868ea09c6fcd9be52c8446289e394f804417b2"
+  },
+  "runs": {
+    "confirm-4090-a6000-chunk0-t0.9": {
+      "manifest": {
+        "utc": "2026-11-22T04:04:56.274790+00:00",
+        "host": "gpu-llm",
+        "argv": [
+          "/tank/nvme/strata/hy4-ring-tests/published-0.1.64/strata-hy4",
+          "--serve",
+          "--model",
+          "/tank/nvme/strata/hy4-ring-tests/checkpoints/Hy4-Flash-SQ-64.strata",
+          "--engram",
+          "/tank/nvme/strata/hy4-ring-tests/checkpoints/Hy4-Flash-Engram-Q8.strata",
+          "--ctx",
+          "4096",
+          "--chunk",
+          "0",
+          "--draft",
+          "dfly2",
+          "--session-reuse",
+          "0",
+          "--gpus",
+          "0,1"
+        ],
+        "devices": [
+          "GPU-1bb29ed9-4868-7c4c-d751-9767355ba099",
+          "GPU-1195e188-785c-526f-bcb6-4d51ae9dadef"
+        ],
+        "model": "Hy4-Flash-SQ-64.strata",
+        "temperature": 0.9,
+        "top_p": 1,
+        "top_k": 64,
+        "prompt": 2048,
+        "requested": 2048,
+        "trials": 3,
+        "warmup_tokens": 128,
+        "prompt_sha256": "c387c7caaebee9fc0dd4ef986f7c4bc835e59ea999e86d118a035778cab90b5d",
+        "binary_sha256": "02cffdc5d456506c2b0dbd91cdc31f2a4adf97f813f3173f87f3c160a0ece7d1",
+        "environment": {
+          "CUDA_VISIBLE_DEVICES": "GPU-1bb29ed9-4868-7c4c-d751-9767355ba099,GPU-1195e188-785c-526f-bcb6-4d51ae9dadef",
+          "CUDA_DEVICE_ORDER": "PCI_BUS_ID"
+        }
+      },
+      "prompt_ids_comma_separated_sha256": "56fe40736578d60553f0c4c3192729912a8f5766e823ce8466a0bae76b9ab236",
+      "placement": [
+        "[load] multi-GPU experts (2 GPUs): total 20992 in VRAM (56.04 GB: GPU0=5095/13.60GB, GPU1=15897/42.44GB), 0 in host/CPU (0.00 GB), 7.5 s",
+        "[runner] kv cache 0.22 GB (init 4096 / ctx 4096, chunk 4096), device free 3.5 GiB"
+      ],
+      "trials": [
+        {
+          "requested": 2048,
+          "generated": 2047,
+          "prompt": 2048,
+          "cached": 0,
+          "prefill_ms": 934.8,
+          "decode_ms": 26550.1,
+          "pp_tps": 2190.8429610611897,
+          "tg_tps": 77.09952128240572,
+          "ttft_s": 0.9361077380017377,
+          "elapsed_s": 27.4860084640095,
+          "finish": "length"
+        },
+        {
+          "requested": 2048,
+          "generated": 2047,
+          "prompt": 2048,
+          "cached": 0,
+          "prefill_ms": 941.3,
+          "decode_ms": 27020.2,
+          "pp_tps": 2175.714437480081,
+          "tg_tps": 75.75813650528123,
+          "ttft_s": 0.9426226820214652,
+          "elapsed_s": 27.962628000008408,
+          "finish": "length"
+        },
+        {
+          "requested": 2048,
+          "generated": 2047,
+          "prompt": 2048,
+          "cached": 0,
+          "prefill_ms": 943.0,
+          "decode_ms": 23892.6,
+          "pp_tps": 2171.792152704136,
+          "tg_tps": 85.67506257167491,
+          "ttft_s": 0.9442526979837567,
+          "elapsed_s": 24.836691044969484,
+          "finish": "length"
+        }
+      ],
+      "shutdown": {
+        "returncode": 0
+      }
+    },
+    "matched-sq128-prompt": {
+      "manifest": {
+        "utc": "2026-11-22T04:06:35.566657+00:00",
+        "host": "gpu-llm",
+        "argv": [
+          "/tank/nvme/strata/hy4-ring-tests/published-0.1.64/strata-hy4",
+          "--serve",
+          "--model",
+          "/tank/nvme/strata/hy4-ring-tests/checkpoints/Hy4-Flash-SQ-64.strata",
+          "--engram",
+          "/tank/nvme/strata/hy4-ring-tests/checkpoints/Hy4-Flash-Engram-Q8.strata",
+          "--ctx",
+          "131072",
+          "--chunk",
+          "1024",
+          "--draft",
+          "dfly2",
+          "--session-reuse",
+          "0",
+          "--gpus",
+          "0,1"
+        ],
+        "devices": [
+          "GPU-1bb29ed9-4868-7c4c-d751-9767355ba099",
+          "GPU-1195e188-785c-526f-bcb6-4d51ae9dadef"
+        ],
+        "model": "Hy4-Flash-SQ-64.strata",
+        "temperature": 0.9,
+        "top_p": 1,
+        "top_k": 64,
+        "prompt": 4750,
+        "requested": 2048,
+        "trials": 1,
+        "warmup_tokens": 0,
+        "prompt_sha256": "1b43d13b993a0d7aee10b71e50d273eca150035b82d87766493f6b84c316d6a2",
+        "binary_sha256": "02cffdc5d456506c2b0dbd91cdc31f2a4adf97f813f3173f87f3c160a0ece7d1",
+        "environment": {
+          "CUDA_VISIBLE_DEVICES": "GPU-1bb29ed9-4868-7c4c-d751-9767355ba099,GPU-1195e188-785c-526f-bcb6-4d51ae9dadef",
+          "CUDA_DEVICE_ORDER": "PCI_BUS_ID"
+        }
+      },
+      "prompt_ids_comma_separated_sha256": "987adfc06d1649e2b093fad0af7ca5a07660e693d86a3a4758cd2e7f0183a555",
+      "placement": [
+        "[load] multi-GPU experts (2 GPUs): total 20992 in VRAM (56.04 GB: GPU0=4704/12.56GB, GPU1=16288/43.48GB), 0 in host/CPU (0.00 GB), 7.4 s",
+        "[runner] kv cache 1.87 GB (init 131072 / ctx 131072, chunk 1024), device free 3.2 GiB"
+      ],
+      "trials": [
+        {
+          "requested": 2048,
+          "generated": 2048,
+          "prompt": 4750,
+          "cached": 0,
+          "prefill_ms": 2677.3,
+          "decode_ms": 25699.8,
+          "pp_tps": 1774.175475292272,
+          "tg_tps": 79.6893361037829,
+          "ttft_s": 2.679366664029658,
+          "elapsed_s": 28.378779150021728,
+          "finish": "length"
+        }
+      ],
+      "shutdown": {
+        "returncode": 0
+      }
+    },
+    "screen-4090-a6000-chunk0-t0.9": {
+      "manifest": {
+        "utc": "2026-11-22T04:04:23.437792+00:00",
+        "host": "gpu-llm",
+        "argv": [
+          "/tank/nvme/strata/hy4-ring-tests/published-0.1.64/strata-hy4",
+          "--serve",
+          "--model",
+          "/tank/nvme/strata/hy4-ring-tests/checkpoints/Hy4-Flash-SQ-64.strata",
+          "--engram",
+          "/tank/nvme/strata/hy4-ring-tests/checkpoints/Hy4-Flash-Engram-Q8.strata",
+          "--ctx",
+          "4096",
+          "--chunk",
+          "0",
+          "--draft",
+          "dfly2",
+          "--session-reuse",
+          "0",
+          "--gpus",
+          "0,1"
+        ],
+        "devices": [
+          "GPU-1bb29ed9-4868-7c4c-d751-9767355ba099",
+          "GPU-1195e188-785c-526f-bcb6-4d51ae9dadef"
+        ],
+        "model": "Hy4-Flash-SQ-64.strata",
+        "temperature": 0.9,
+        "top_p": 1,
+        "top_k": 64,
+        "prompt": 2048,
+        "requested": 256,
+        "trials": 1,
+        "warmup_tokens": 128,
+        "prompt_sha256": "c387c7caaebee9fc0dd4ef986f7c4bc835e59ea999e86d118a035778cab90b5d",
+        "binary_sha256": "02cffdc5d456506c2b0dbd91cdc31f2a4adf97f813f3173f87f3c160a0ece7d1",
+        "environment": {
+          "CUDA_VISIBLE_DEVICES": "GPU-1bb29ed9-4868-7c4c-d751-9767355ba099,GPU-1195e188-785c-526f-bcb6-4d51ae9dadef",
+          "CUDA_DEVICE_ORDER": "PCI_BUS_ID"
+        }
+      },
+      "prompt_ids_comma_separated_sha256": "56fe40736578d60553f0c4c3192729912a8f5766e823ce8466a0bae76b9ab236",
+      "placement": [
+        "[load] multi-GPU experts (2 GPUs): total 20992 in VRAM (56.04 GB: GPU0=5095/13.60GB, GPU1=15897/42.44GB), 0 in host/CPU (0.00 GB), 22.9 s",
+        "[runner] kv cache 0.22 GB (init 4096 / ctx 4096, chunk 4096), device free 3.5 GiB"
+      ],
+      "trials": [
+        {
+          "requested": 256,
+          "generated": 256,
+          "prompt": 2048,
+          "cached": 0,
+          "prefill_ms": 934.0,
+          "decode_ms": 2814.9,
+          "pp_tps": 2192.7194860813706,
+          "tg_tps": 90.94461614977442,
+          "ttft_s": 0.9351679930114187,
+          "elapsed_s": 3.749756339006126,
+          "finish": "length"
+        }
+      ],
+      "shutdown": {
+        "returncode": 0
+      }
+    }
+  },
+  "confirm_median": {
+    "pp_tps": 2175.714437480081,
+    "tg_tps": 77.09952128240572
+  },
+  "matched_sq128": {
+    "arm": "dual",
+    "engine": "published",
+    "argv": [
+      "/tank/nvme/strata/hy4-ring-tests/published-0.1.64/strata-hy4",
+      "--serve",
+      "--model",
+      "/tank/nvme/strata/hy4-ring-tests/checkpoints/Hy4-Flash-SQ-128.strata",
+      "--engram",
+      "/tank/nvme/strata/hy4-ring-tests/checkpoints/Hy4-Flash-Engram-Q8.strata",
+      "--max-context",
+      "131072",
+      "--chunk",
+      "1024",
+      "--session-reuse",
+      "1",
+      "--draft",
+      "dfly2",
+      "--gpus",
+      "0,1"
+    ],
+    "uuids": "GPU-1bb29ed9-4868-7c4c-d751-9767355ba099,GPU-1195e188-785c-526f-bcb6-4d51ae9dadef",
+    "binary_sha256": "02cffdc5d456506c2b0dbd91cdc31f2a4adf97f813f3173f87f3c160a0ece7d1",
+    "prompt_sha256": "987adfc06d1649e2b093fad0af7ca5a07660e693d86a3a4758cd2e7f0183a555",
+    "input_tokens": 4750,
+    "output_tokens": 2048,
+    "reused": 0,
+    "temperature": 0.9,
+    "top_k": 64,
+    "top_p": 1,
+    "load_s": 46.56921434000833,
+    "wall_s": 135.93832958099665,
+    "ttft_s": 32.890597707009874,
+    "pp_tps": 144.42738343189868,
+    "decode_tps": 19.874156221736584,
+    "finish": "length"
+  }
+}
