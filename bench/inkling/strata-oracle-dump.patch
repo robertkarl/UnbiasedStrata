@@ -1,0 +1,22 @@
+--- a/engine/src/inkling2/ink_main.cpp
++++ b/engine/src/inkling2/ink_main.cpp
+@@ -321,11 +321,14 @@
+     const int32_t n_tok = static_cast<int32_t>(ids.size());
+     const int32_t V = mf.m.c.vocab_unpadded;
+     std::vector<float> logits(static_cast<size_t>(n_tok) * V);
+-    StepBatch batch;
+-    for (int i = 0; i < n_tok; ++i) batch.push(0, i, ids[i], true);
+-    if (!backend->forward_batch(batch, logits.data(), nullptr, err)) {
+-        fprintf(stderr, "forward: %s\n", err.c_str());
+-        return 1;
++    // Diagnostic driver: ask the unmodified Metal backend for at most 64 logit rows per call.
++    for (int start = 0; start < n_tok; start += 64) {
++        StepBatch batch;
++        for (int i = start; i < std::min(start + 64, n_tok); ++i) batch.push(0, i, ids[i], true);
++        if (!backend->forward_batch(batch, logits.data() + size_t(start) * V, nullptr, err)) {
++            fprintf(stderr, "forward: %s\n", err.c_str());
++            return 1;
++        }
+     }
+     FILE* f = std::fopen(out_path.c_str(), "wb");
+     if (!f) { fprintf(stderr, "dump-ref: cannot write %s\n", out_path.c_str()); return 1; }

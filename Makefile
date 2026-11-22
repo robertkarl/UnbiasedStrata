@@ -7,14 +7,16 @@
 #   make test                       # the front end against a fake engine; no GPU needed
 #
 BUILD_DIR  ?= build
+BUILD_IK2  ?= OFF
 # CUDA archs: GTX 10 (61), RTX 20 / GTX 16 (75), RTX 30 (86), RTX 40 (89).  Any arch below 75 turns on upstream's
 # STRATA_EXPERIMENTAL_SM60, which needs a CUDA 12.x toolkit (13 dropped sm_61).  `make build CUDA_ARCHS=86` builds for
 # one card and is several times faster.  An arch the installed nvcc cannot compile is dropped with a note.
 CUDA_ARCHS ?= 61;75;86;89
 # nvcc: on PATH, else the toolkit's usual place (RunPod images and distro packages differ).  NVCC=/path overrides.
 NVCC ?= $(or $(shell command -v nvcc 2>/dev/null),$(wildcard /usr/local/cuda/bin/nvcc))
+CUDA_GOALS = build configure $(if $(filter-out Darwin,$(shell uname -s)),inkling)
 ifeq ($(NVCC),)
-  ifneq ($(filter build configure,$(MAKECMDGOALS)),)
+  ifneq ($(filter $(CUDA_GOALS),$(MAKECMDGOALS)),)
     $(error nvcc not found on PATH or in /usr/local/cuda/bin; install a CUDA 12.x toolkit or set NVCC=/path/to/nvcc)
   endif
 endif
@@ -57,7 +59,20 @@ configure:
 	      -DSTRATA_MMQ_KQUANTS=ON -DSTRATA_Q6K_EXPERTS=ON -DSTRATA_BUILD_DSV41=ON -DSTRATA_BUILD_TESTS=OFF \
 	      "-DCMAKE_CUDA_ARCHITECTURES=$(CUDA_ARCHS)" $(SM60_FLAG) $(PORTABLE_FLAG) $(COMPILER_FLAGS) -DCMAKE_CUDA_COMPILER=$(NVCC) \
 	      -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$(abspath $(BUILD_DIR))/bin \
-	      -DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$(abspath $(BUILD_DIR))/bin $(CMAKE_EXTRA)
+	      -DCMAKE_LIBRARY_OUTPUT_DIRECTORY=$(abspath $(BUILD_DIR))/bin -DSTRATA_BUILD_IK2=$(BUILD_IK2) $(CMAKE_EXTRA)
+
+# Inkling 2 Mini, on Linux x86-64 with an Ampere or newer GPU.
+.PHONY: inkling
+ifeq ($(shell uname -s),Darwin)
+inkling:
+	cmake -S . -B $(BUILD_DIR)-frontend -DCMAKE_BUILD_TYPE=Release -DSTRATA_ENABLE_CUDA=OFF -DSTRATA_BUILD_TESTS=OFF \
+	      -DSTRATA_BUILD_IK2=ON -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$(abspath $(BUILD_DIR))-frontend/bin $(CMAKE_EXTRA)
+	cmake --build $(BUILD_DIR)-frontend -j $(JOBS) --target strata-inkling unbiased-strata
+else
+inkling: BUILD_IK2 = ON
+inkling: configure
+	cmake --build $(BUILD_DIR) -j $(JOBS) --target strata-ik2 unbiased-strata
+endif
 
 build: configure
 	cmake --build $(BUILD_DIR) -j $(JOBS) --target $(TARGETS)

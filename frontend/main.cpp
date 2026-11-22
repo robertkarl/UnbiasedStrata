@@ -8,6 +8,11 @@
 // defaults, --reasoning-format/--chat-template-kwargs/--jinja the chat handling. Options after `--` go to the engine
 // as they are; `--serve` is added. The engine's READY line gives the context size.
 
+#ifdef __APPLE__
+#include <mach-o/dyld.h>
+#include <filesystem>
+#endif
+
 #include "strata_context.hpp"
 
 #include "arg.h"
@@ -42,14 +47,14 @@ void signal_handler(int) {
 
 void usage() {
     std::fprintf(stderr,
-        "usage: unbiased-strata --engine <strata|strata-poly|strata-hy4|path> -m <model> [llama-server options] -- <engine options>\n"
+        "usage: unbiased-strata --engine <strata|strata-poly|strata-hy4|strata-ik2|strata-inkling|path> -m <model> [llama-server options] -- <engine options>\n"
         "\n"
         "  --engine PATH          the engine binary; a bare name is looked up beside this program\n"
-        "  -m, --model FILE       vocabulary and chat template from a GGUF or Hy4 .strata text checkpoint\n"
+        "  -m, --model FILE       vocabulary and chat template from a GGUF or a Hy4 or Inkling .strata text checkpoint\n"
         "  --host, --port, --api-key, --threads-http, --temp, --top-k, --top-p, --min-p, --reasoning-format,\n"
         "  --chat-template-kwargs, --alias ...   llama-server options (see llama-server --help)\n"
         "  --mmproj FILE          the model's vision projector: image_url parts are encoded in this process and\n"
-        "                         handed to the engine (Qwen family); on the CPU (--threads N) unless --mmproj-gpu\n"
+        "                         handed to the engine (Qwen or Inkling); on the CPU (--threads N) unless --mmproj-gpu\n"
         "  --mmproj-gpu           encode on the card: about 1 GB of VRAM plus work buffers, taken before the engine\n"
         "                         sizes its expert cache only if the encoder loads first; for cards with room\n"
         "  --picture-cache N      keep the encoded rows of the last N pictures (default 64, up to 1 GiB) so a chat\n"
@@ -62,6 +67,13 @@ void usage() {
 }
 
 std::string self_dir() {
+#ifdef __APPLE__
+    uint32_t size = 0;
+    _NSGetExecutablePath(nullptr, &size);
+    std::vector<char> path(size);
+    if (_NSGetExecutablePath(path.data(), &size) != 0) return ".";
+    return std::filesystem::canonical(path.data()).parent_path().string();
+#else
     char buf[4096];
     const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof buf - 1);
     if (n <= 0) {
@@ -71,6 +83,7 @@ std::string self_dir() {
     std::string p(buf);
     const size_t slash = p.find_last_of('/');
     return slash == std::string::npos ? "." : p.substr(0, slash);
+#endif
 }
 
 bool file_exists(const std::string & p) {
