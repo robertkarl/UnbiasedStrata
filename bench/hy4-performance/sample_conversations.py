@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 
 
-def draw(child, prompt, seed):
+def draw(child, prompt, prompt_length, seed):
     child.stdin.write(f"GEN 1 temperature=0.9 top_p=1 top_k=64 seed={seed} {prompt}\n")
     child.stdin.flush()
     tokens = []
@@ -16,7 +16,8 @@ def draw(child, prompt, seed):
         if line.startswith("T "):
             tokens.append(int(fields[1]))
         elif line.startswith("DONE "):
-            if (len(tokens) != 1 or int(fields[1]) != 1 or fields[5] not in ("stop", "length")
+            if (len(tokens) != 1 or int(fields[1]) != 1 or int(fields[2]) != prompt_length
+                    or fields[5] not in ("stop", "length")
                     or int(fields[8]) != 0):
                 raise RuntimeError(f"unexpected one-token completion: {line}")
             return tokens[0]
@@ -43,8 +44,9 @@ def main():
             if not any(line.startswith("READY ") for line in child.stdout):
                 raise RuntimeError("native server exited before READY")
             for path in paths:
-                prompt = ",".join(path.read_text().split())
-                rows = [{"seed": s, "token": draw(child, prompt, s)} for s in range(1, 97)]
+                ids = path.read_text().split()
+                prompt = ",".join(ids)
+                rows = [{"seed": s, "token": draw(child, prompt, len(ids), s)} for s in range(1, 97)]
                 (args.out / (path.parent.name + ".json")).write_text(json.dumps(rows) + "\n")
             child.stdin.write("QUIT\n")
             child.stdin.close()
