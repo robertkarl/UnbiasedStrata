@@ -40,3 +40,35 @@ For a 131,072-token context capacity, pass the saved 4,750-token prompt, set `--
 The reviewed SQ-64 HTTP build passed the inventory and tool-call preflight at 131,072 context capacity using Hy4's unrestricted production sampler. Both 4,750-token inventory prompts returned the verified count for record 179. They produced 3,517 and 2,939 tokens at 64.76 and 62.64 decode tokens/s. The assistant requested the correct SKU and incorporated the returned stock count in its answer.
 
 The four pilot tasks scored 1/1 on write-hello, 1/1 on write-hello-word, 10/10 on comfyui-sd and 5/5 on api-contract-drift. The subsequent file-ring and file-ring-traverse runs scored 3/3 and 6/6 with Regina's pinned tooling. The full 86-task BBW remains paused.
+
+## Multi-turn conversation oracle
+
+The [fixtures](conversations.json) contain two independent four-message conversations and fixed assistant continuations. One asks for a PostgreSQL design for partial refunds. The other asks for bilingual museum labels about objects with uncertain provenance. Render each conversation with Hy4's chat template. Verify that the checkpoint tokenizer and the HTTP tokenizer produce identical prompt IDs.
+
+For each assistant token, score the row immediately preceding it. The CUDA runners receive exactly the same prompt and teacher-forced prefix. The scorer computes forward KL from stock to fork and total variation over all 120,832 next-token probabilities, followed by total variation after applying temperature 0.9 and top-k 64. Perplexity and accuracy refer only to the written assistant continuations. Sampling has its own behavioral check, using a fresh prefix and the same 96 nonzero seeds per engine. The speed comparison uses seeds 41–43, a 128-token warm-up, no prefix reuse, a 4,096-token context and a 2,048-token generation cap.
+
+```sh
+bench=bench/hy4-performance
+python3 "$bench/conversation_oracle.py" --out ./conversations prepare \
+  --url http://127.0.0.1:8080 --tokenizer /path/to/tokenizer.hf.json
+# Stop the serving process to release both GPUs before loading either native engine.
+python3 "$bench/conversation_oracle.py" --out ./conversations compare \
+  --oracle /path/to/stock/strata-hy4 --candidate build-hy4/bin/strata-hy4 \
+  --model /models/hy4/Hy4-Flash-SQ-64.strata --engram /models/hy4/Hy4-Flash-Engram-Q8.strata
+```
+
+Set the same CUDA device order as in the serving example. Use `sample_conversations.py` once per native executable with separate output directories for the 96 paired first-token draws. For timing, pass each case's saved `prompt.ids` and `--seed 41` to `measure.py` and `measure_http.py`. The native tool also requires `--prompt` set to the number of IDs. Stock and HTTP elapsed time both start before sending the request and end after the completion arrives. Model loading and warm-ups are excluded.
+
+| Conversation | Assistant targets | Mean / maximum KL in nats | Maximum full / top-k TV | Perplexity, both engines | Stock / fork top-1 accuracy |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Refund ledger | 163 | 0 / 0 | 0 / 0 | 7.430197 | 85/163 on both |
+| Bilingual museum labels | 154 | 0 / 0 | 0 / 0 | 8.483685 | 71/154 on both |
+
+The full logit arrays were bit-identical. All 96 paired first-token draws matched for each conversation. Code review found that a NumPy partial sort could select the wrong token IDs when logits tied at rank 64. The final scorer follows the native lower-token-ID tie break. Rescoring the saved arrays and comparing native draws yielded the values above.
+
+| Client-observed configuration | Ledger prefill | Ledger decode | Museum prefill | Museum decode | Both conversations, end-to-end output tokens/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Stock native | 993.44 | 94.95 | 1,074.04 | 81.98 | 87.03 |
+| UnbiasedStrata HTTP | 1,008.76 | 87.74 | 1,080.07 | 73.54 | 78.97 |
+
+Each arm generated 12,288 tokens over six requests. Stock took 141.19 seconds and UnbiasedStrata took 155.60 seconds, including prefill. The fork delivered 90.74% of stock end-to-end throughput. The median time to first token was 236 ms for HTTP and 238 ms for stock. See the [per-seed results and first-token counts](conversation-results.json).
