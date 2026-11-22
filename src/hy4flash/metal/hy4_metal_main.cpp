@@ -627,8 +627,13 @@ public:
             size_t budget = (work_set > used_now + (size_t) 4 * 1024 * 1024 * 1024ULL) ? (work_set - used_now - (size_t) 4 * 1024 * 1024 * 1024ULL) : ((size_t) 2 * 1024 * 1024 * 1024ULL);
             const char* env_gb = getenv("STRATA_METAL_EXP_CACHE_GB");
             if (env_gb && *env_gb) budget = (size_t) (atof(env_gb) * 1e9);
-            budget = std::min(budget, (size_t) 41 * 512 * exp_slot_bytes);
-            budget = std::max(budget, (size_t) 512 * exp_slot_bytes);  // at least 1 full layer (512 experts) for prefill!
+            const size_t layer_bytes = 512 * exp_slot_bytes;
+            const size_t cache_limit = std::min<size_t>(cx.max_buffer_length(), 41 * layer_bytes);
+            if (cache_limit < layer_bytes) {
+                err = "Metal's maximum buffer length is too small for one layer of experts";
+                return false;
+            }
+            budget = std::clamp(budget, layer_bytes, cache_limit);
             exp_n_slots = (int) (budget / exp_slot_bytes);
             exp_cache = A((size_t) exp_n_slots * exp_slot_bytes);
             exp_slot_of.assign(41 * 512, -1);
