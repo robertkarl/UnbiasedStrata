@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 import platform
 import statistics
@@ -48,7 +49,9 @@ def trial(child, ids, limit, temperature, protocol, token_stream):
             n, prompt = int(fields[1]), int(fields[2])
             pp, tg = float(fields[3]), float(fields[4])
             cached = int(fields[8]) if len(fields) >= 9 else 0
-            if n != len(generated) or n == 0 or prompt != len(ids) or cached:
+            if (fields[5] not in ("length", "stop") or not 0 < n <= limit or
+                    n != len(generated) or prompt != len(ids) or cached or
+                    not all(math.isfinite(ms) and ms > 0 for ms in (pp, tg))):
                 raise RuntimeError(f"unexpected native completion: {line}")
             token_stream.write(json.dumps(generated) + "\n")
             return dict(requested=limit, generated=n, prompt=prompt, cached=cached,

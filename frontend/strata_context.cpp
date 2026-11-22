@@ -777,9 +777,12 @@ struct strata_context_impl {
             } else {
                 result.text_to_send = "";
             }
-            if (slot.task->params.stream) {
-                send_partial_response(result, false, false);
-            }
+        } else {
+            // A token can end mid-character. Its ID is ready even while its text is buffered.
+            result.text_to_send.clear();
+        }
+        if (slot.task->params.stream && (!incomplete || slot.task->params.return_tokens)) {
+            send_partial_response(result, false, false);
         }
 
         if (slot.stats.n_gen > 0 && slot.has_next_token && !slot.has_budget()) {

@@ -20,6 +20,7 @@ def trial(url, ids, limit, temperature, top_k):
                                      {"Content-Type": "application/json"})
     start = time.monotonic()
     first = last = None
+    first_event_tokens = 0
     output_count = 0
     timings = None
     with urllib.request.urlopen(request, timeout=600) as response:
@@ -34,6 +35,7 @@ def trial(url, ids, limit, temperature, top_k):
                 last = time.monotonic()
                 if first is None:
                     first = last
+                    first_event_tokens = len(tokens)
                 output_count += len(tokens)
             if event.get("stop"):
                 timings = event["timings"]
@@ -42,7 +44,7 @@ def trial(url, ids, limit, temperature, top_k):
     if timings["prompt_n"] != len(ids) or timings["predicted_n"] != output_count:
         raise RuntimeError(f"unexpected token accounting: {timings}, streamed {output_count}")
     return dict(input=len(ids), output=output_count, requested=limit, ttft_s=first-start,
-                client_pp_tps=len(ids)/(first-start), client_tg_tps=(output_count-1)/(last-first),
+                client_pp_tps=len(ids)/(first-start), client_tg_tps=(output_count-first_event_tokens)/(last-first),
                 timings=timings)
 
 

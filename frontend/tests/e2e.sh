@@ -98,7 +98,7 @@ rm -f "$IMG"
 # The vocabulary-only GGUF's template has neither tools nor reasoning, so this runs a third server with upstream's
 # Qwen3 template (frontend/tests/data/qwen3-chat-template.jinja: tools through tojson, <think> blocks).
 TPL_PORT=$((PORT + 2)); TPL_URL=http://127.0.0.1:$TPL_PORT; TPL_LOG=$(mktemp "${TMPDIR:-/tmp}/us2-e2e-tpl-XXXXXX")
-"$BIN" --engine "$HERE/fake-engine.py" -m "$MODEL" --jinja --chat-template-file "$HERE/data/qwen3-chat-template.jinja" --host 127.0.0.1 --port "$TPL_PORT" --alias fake -- --max-context 4096 > "$TPL_LOG" 2>&1 &
+FAKE_TOKENS=9707,220,126190,230,1879 "$BIN" --engine "$HERE/fake-engine.py" -m "$MODEL" --jinja --chat-template-file "$HERE/data/qwen3-chat-template.jinja" --host 127.0.0.1 --port "$TPL_PORT" --alias fake -- --max-context 4096 > "$TPL_LOG" 2>&1 &
 TPL_PID=$!
 trap 'kill $PID $SLOW_PID $TPL_PID 2>/dev/null; wait $PID $SLOW_PID $TPL_PID 2>/dev/null; rm -f "$LOG" "$SLOW_LOG" "$TPL_LOG" "$BIG"' EXIT
 for i in $(seq 1 100); do
@@ -170,6 +170,19 @@ PY
 echo "$lit" | sed 's/^/     /'
 check $rc "control-token texts inside messages are text (literals)"
 check $(grep -q "control-token texts inside the messages are sent as text" "$TPL_LOG" && echo 0 || echo 1) "server logged the literals"
+
+# The fake reply contains a four-byte character split across two vocabulary tokens.
+python3 - "$TPL_URL" <<'PYTEST'
+import json, sys, urllib.request
+payload = {"prompt": [9707], "n_predict": 5, "return_tokens": True, "stream": True}
+req = urllib.request.Request(sys.argv[1] + "/completion", json.dumps(payload).encode(),
+                             {"Content-Type": "application/json"})
+with urllib.request.urlopen(req, timeout=20) as stream:
+    events = [json.loads(line[6:]) for line in stream if line.startswith(b"data: {")]
+assert [tok for event in events for tok in event.get("tokens", [])] == [9707, 220, 126190, 230, 1879]
+assert "".join(event.get("content", "") for event in events) == "Hello 𐍈 world"
+PYTEST
+check $? "stream preserves split UTF-8 token IDs and assembled text"
 
 # tokenize / detokenize round trip
 t=$(curl -s "$URL/tokenize" -H 'content-type: application/json' -d '{"content":"Hello, world!"}' | j 'd["tokens"]')
