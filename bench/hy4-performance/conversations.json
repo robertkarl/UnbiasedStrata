@@ -1,0 +1,22 @@
+{
+  "ledger": {
+    "messages": [
+      {"role": "system", "content": "You review accounting software. Make each invariant testable, identify ambiguous business rules, and distinguish events from balances."},
+      {"role": "user", "content": "Our library records deposits for borrowed instruments. A deposit is refundable if the instrument comes back in good condition. How should we represent a refund?"},
+      {"role": "assistant", "content": "Keep the original deposit and append a refund event that references it. Keep the member, instrument, amount in integer cents and currency on each event. A refund changes a balance without erasing the audit trail. What happens if only part of the deposit is returned?"},
+      {"role": "user", "content": "Part can be withheld for repairs. A member deposits 120 euros, we withhold 35 and refund 85. The payment provider can deliver a refund webhook twice and sometimes before our synchronous API reply. Design the ledger and reconciliation job in PostgreSQL. Write a detailed implementation guide with schema, transaction boundaries, worked postings, concurrent timelines, counterexamples and executable test cases. Explain how each failure case recovers. Aim for about 1,800 words."}
+    ],
+    "reasoning_effort": "none",
+    "assistant_continuation": "Start with the money that the library owes the member. When the library receives the deposit, cash increases by 12,000 cents and the refundable deposit liability increases by the same amount. Returning the instrument in damaged condition creates a separate decision about the repair charge. Record the decision and its evidence before initiating the payment. If the member accepts a charge of 3,500 cents, debit the liability for that amount and credit the appropriate repair account. The liability then has a balance of 8,500 cents. A successful refund debits the remaining liability and credits cash or a clearing account. The webhook and the synchronous reply describe the same transfer. Give that transfer one stable identifier and enforce uniqueness inside the same transaction that writes its postings. A second observation can add evidence without adding a second payment."
+  },
+  "museum": {
+    "messages": [
+      {"role": "system", "content": "You edit bilingual museum labels. Preserve provenance, distinguish documented facts from conjecture, and explain translations in accessible language."},
+      {"role": "user", "content": "We are preparing an exhibition around a notebook. Its cover says « Carnet de voyage, 1908 ». An unsigned pencil annotation says 京都, and a catalogue card filed in 1931 lists the donor as A. Martin. What can we safely say?"},
+      {"role": "assistant", "content": "The cover names a travel notebook and gives 1908. The annotation reads Kyōto. The 1931 catalogue records A. Martin as donor. Those observations alone do not establish who wrote the notebook, when the annotation was made, or whether the writer visited Japan."},
+      {"role": "user", "content": "We found a loose ticket stamped Lyon, 1910 between the pages. Write a detailed English–French exhibition and audio-guide plan for adult visitors and school groups. Include paired labels, an accessible description, a guided exercise comparing each piece of evidence, plausible competing chronologies, a source table and an editorial checklist. Revisit the translation of 京都 without implying where it was written. Aim for about 1,800 words and make the examples usable as printed labels."}
+    ],
+    "reasoning_effort": "none",
+    "assistant_continuation": "The ticket changes the list of objects we can describe. It does not give a date to every mark on the page. A first label can put the visitor in the position of the cataloguer: “Four inscriptions, four different questions.” In French: « Quatre inscriptions, quatre questions différentes. » On the cover, the date 1908 is part of a title. On the ticket, Lyon and 1910 appear together in a stamp. Neither inscription identifies the person who put the ticket between the pages. 京都 can be read as Kyōto, the name of the city; a name on paper is evidence of a written reference to a place. To suggest an actual journey, we would need independent evidence linking a particular traveller, place and time."
+  }
+}

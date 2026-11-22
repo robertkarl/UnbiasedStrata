@@ -31,9 +31,10 @@ def workload(tokenizer, size):
     return head + inventory[:n] + tail
 
 
-def trial(child, ids, limit, temperature, protocol, token_stream):
+def trial(child, ids, limit, temperature, protocol, token_stream, seed=None):
     start = time.monotonic()
-    child.stdin.write(f"GEN {limit} temperature={temperature} top_p=1 top_k=64 " + ",".join(map(str, ids)) + "\n")
+    seed_opt = "" if seed is None else f" seed={seed}"
+    child.stdin.write(f"GEN {limit} temperature={temperature} top_p=1 top_k=64{seed_opt} " + ",".join(map(str, ids)) + "\n")
     child.stdin.flush()
     generated = []
     for line in child.stdout:
@@ -57,7 +58,8 @@ def trial(child, ids, limit, temperature, protocol, token_stream):
             return dict(requested=limit, generated=n, prompt=prompt, cached=cached,
                         prefill_ms=pp, decode_ms=tg, pp_tps=1000*prompt/pp,
                         tg_tps=1000*n/tg, ttft_s=first-start, elapsed_s=time.monotonic()-start,
-                        finish=fields[5])
+                        finish=fields[5], seed=seed, output_sha256=hashlib.sha256(
+                            ",".join(map(str, generated)).encode()).hexdigest())
         if line.startswith(("ERR", "FATAL")):
             raise RuntimeError(line.rstrip())
     raise RuntimeError(f"engine exited before DONE (status {child.poll()})")
@@ -76,7 +78,10 @@ def main():
     parser.add_argument("--trials", type=int, default=3)
     parser.add_argument("--warmup", type=int, default=128)
     parser.add_argument("--temperature", type=float, default=0.9)
+    parser.add_argument("--seed", type=int, help="first measured seed; increment for each trial")
     opt = parser.parse_args()
+    if opt.seed is not None and not 0 <= opt.seed <= 2**32 - 1 - opt.trials:
+        parser.error("measured seeds must fit in uint32 and exclude the default seed sentinel")
     if opt.prompt + opt.generate > opt.context:
         parser.error("input and output exceed the configured context")
     opt.out.mkdir(parents=True, exist_ok=False)
@@ -113,9 +118,10 @@ def main():
             if {l.split(",")[0] for l in processes.splitlines() if l.rsplit(",",1)[-1].strip()==str(child.pid)} != set(manifest["devices"]):
                 raise RuntimeError("CUDA device attribution differs from requested UUIDs")
             if opt.warmup:
-                write_json(opt.out/"warmup.json",trial(child,ids,opt.warmup,opt.temperature,wire,tokens))
-            for _ in range(opt.trials):
-                rows.append(trial(child,ids,opt.generate,opt.temperature,wire,tokens))
+                write_json(opt.out/"warmup.json",trial(child,ids,opt.warmup,opt.temperature,wire,tokens, opt.seed))
+            for i in range(opt.trials):
+                rows.append(trial(child,ids,opt.generate,opt.temperature,wire,tokens,
+                                  None if opt.seed is None else opt.seed + i))
                 write_json(opt.out/"trials.json",rows)
             child.stdin.write("QUIT\n")
             child.stdin.close()
