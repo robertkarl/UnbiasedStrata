@@ -34,3 +34,9 @@ python3 bench/hy4-performance/measure_http.py \
 ```
 
 For a 131,072-token context capacity, pass the saved 4,750-token prompt, set `--warmup 0 --trials 1`, and launch the server with a 1,024-token chunk. Each HTTP result saves the prompt digest, full token counts, client timings and server timings.
+
+## Regina serving checks
+
+The reviewed SQ-64 HTTP build passed the inventory and tool-call preflight at 131,072 context capacity using Hy4's unrestricted production sampler. Both 4,750-token inventory prompts returned the verified count for record 179. They produced 3,517 and 2,939 tokens at 64.76 and 62.64 decode tokens/s. The assistant requested the correct SKU and incorporated the returned stock count in its answer.
+
+The four pilot tasks scored 1/1 on write-hello, 1/1 on write-hello-word, 10/10 on comfyui-sd and 5/5 on api-contract-drift. The subsequent file-ring and file-ring-traverse runs scored 3/3 and 6/6 with Regina's pinned tooling. The full 86-task BBW remains paused.
