@@ -47,7 +47,8 @@ def prepare(args, cases):
 
 def sampled_distribution(row):
     # Conditional target distribution for temperature 0.9, top-k 64, top-p 1.
-    top = np.argpartition(row, -64)[-64:]
+    # Native top-k breaks equal-logit ties by ascending vocabulary ID.
+    top = np.argsort(-row, kind="stable")[:64]
     probabilities = np.zeros(len(row))
     probabilities[top] = np.exp(logsoftmax(row[top] / 0.9))
     return probabilities
