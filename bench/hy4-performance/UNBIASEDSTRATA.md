@@ -72,3 +72,7 @@ The full logit arrays were bit-identical. All 96 paired first-token draws matche
 | UnbiasedStrata HTTP | 1,008.76 | 87.74 | 1,080.07 | 73.54 | 78.97 |
 
 Each arm generated 12,288 tokens over six requests. Stock took 141.19 seconds and UnbiasedStrata took 155.60 seconds, including prefill. The fork delivered 90.74% of stock end-to-end throughput. The median time to first token was 236 ms for HTTP and 238 ms for stock. See the [per-seed results and first-token counts](conversation-results.json).
+
+The six long, seeded DFly2 replies had different token hashes between stock and fork. We repeated seed 41 in fresh processes to distinguish sampler behavior from HTTP delivery. With DFly2 off, all 256 tokens matched stock on each conversation. With DFly2 on, stock's own 2,048-token replay first diverged at token 5 on both conversations. The fork's native and HTTP paths returned identical 2,048-token sequences on both. Upstream's draft scheduler uses measured iteration times to change the verification window and switch to plain decode. These decisions change which random draws are consumed. The fork fixes that scheduling choice for explicitly seeded requests. The [replay controls](conversation-results.json) include each hash and the matching prefix lengths.
+
+A second complete set of 96 one-token draws per conversation verified the engine-reported prompt length on every request. All results matched the first set on each engine.
