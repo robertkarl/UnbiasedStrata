@@ -20,3 +20,7 @@ The earlier SQ-128 inventory runs used 4,750 input tokens, a 131,072-token conte
 SQ-128 dual placement put 43.56 GB of expert weights on the CPU. The single-card loader backed all 105.76 GB of expert weights in host RAM and selected adaptive GPU slots. During 4090 decode, the host disk-read median was 1.9 MB/s and the maximum was 4.0 MB/s. Every recorded decode sample had zero major faults and zero swap activity. The transient high disk read rate during A6000 loading accompanied the 113.65 GB checkpoint read.
 
 The model packs and Q8 Engram file are archived and checksum-verified on the SMB model share. NVMe is the host-side cache. Raw benchmark outputs are kept under the GPU host's `hy4-ring-tests` directory and in Regina's `results_hy4_sq128_single_card_20261121` directory. The SQ-128 BBW run was stopped when single-GPU performance became the priority.
+
+## SQ-64 search order
+
+First test the dual-GPU layout with each card as primary and Strata's automatic prefill chunk size. Then test explicit 1,024- and 2,048-token chunks and each card alone. A 128-token warm-up precedes the 256-token screening request. A configuration clearing both speed floors gets a new engine process, a warm-up and three long requests. The initial search uses sampled generation. Greedy generation is recorded as its own configuration if needed. Data are retained for failed trials and slower configurations.
