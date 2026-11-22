@@ -15,3 +15,4 @@ Dual-V100 reference 1,068 prompt and 41.8 decode tokens/s. The 80% floors are 85
 | Stage | GPU order | Chunk | Temperature | Output tokens per trial | Prompt | Decode |
 | --- | --- | ---: | ---: | --- | ---: | ---: |
 | screen | 4090-a6000 | 0 | 0.9 | 256 | 2192.72 | 90.94 |
+| confirm | 4090-a6000 | 0 | 0.9 | 2047, 2047, 2047 | 2175.71 | 77.10 |
