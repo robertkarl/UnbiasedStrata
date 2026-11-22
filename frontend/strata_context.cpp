@@ -5,6 +5,7 @@
 
 #include "strata_context.hpp"
 #include "engine.hpp"
+#include "hy4_vocab.hpp"
 #include "literals.hpp"
 #include "picture_cache.hpp"
 
@@ -28,6 +29,7 @@
 #include <atomic>
 #include <cinttypes>
 #include <cstdio>
+#include <filesystem>
 #include <mutex>
 #include <set>
 #include <chrono>
@@ -38,6 +40,13 @@ using strata_frontend::Engine;
 using strata_frontend::EngineLine;
 
 namespace {
+
+// Hy4's template accepts three effort strings (Strata terminal/serve/hy4_dialect.py).
+std::string hy4_effort(const std::string & effort) {
+    if (effort == "none" || effort == "no_think" || effort == "off" || effort == "disabled" || effort == "false") return "no_think";
+    if (effort == "max" || effort == "xhigh" || effort == "maximum") return "max";
+    return "high";
+}
 
 // how long update_slots() waits for an engine line before returning to the queue (which then sees cancels)
 constexpr int ENGINE_POLL_MS = 20;
@@ -202,10 +211,17 @@ struct strata_context_impl {
     std::string              engine_exe;
     std::vector<std::string> engine_args;
     bool                     engine_is_poly = false;
+    bool                     engine_is_hy4 = false;
     long long                n_ctx = 0;
+    std::atomic<bool>        stopping{false};
     std::atomic<bool>        engine_dead{false};
 
     Slot slot;
+
+    const char * engine_name() const {
+        if (engine_is_hy4) return "strata-hy4";
+        return engine_is_poly ? "strata-poly" : "strata";
+    }
 
     // ---- queue callbacks -------------------------------------------------------------------------------------------
 
@@ -319,10 +335,12 @@ struct strata_context_impl {
         } else {
             ids = t.tokens.get_text_tokens();
         }
-        const long long room = n_ctx - n_prompt - ENGINE_CONTEXT_RESERVE;
+        // Both Hy4 backends reserve one position in their native serve loop.
+        const int reserve = engine_is_hy4 ? 1 : ENGINE_CONTEXT_RESERVE;
+        const long long room = n_ctx - n_prompt - reserve;
         if (room <= 0) {
             send_error(t, string_format("the request exceeds the available context size: %d prompt tokens, context %lld (%d kept back)",
-                                        n_prompt, n_ctx, ENGINE_CONTEXT_RESERVE), ERROR_TYPE_EXCEED_CONTEXT_SIZE);
+                                        n_prompt, n_ctx, reserve), ERROR_TYPE_EXCEED_CONTEXT_SIZE);
             slot.release();
             return;
         }
@@ -367,8 +385,9 @@ struct strata_context_impl {
         if (s.temp > 0.0f) {
             std::snprintf(b, sizeof b, " temperature=%g", (double) s.temp); h += b;
             if (s.top_p > 0.0f && s.top_p < 1.0f) { std::snprintf(b, sizeof b, " top_p=%g", (double) s.top_p); h += b; }
-            // strata's sampled path takes top_k in 1..64; 0 means "whole vocabulary" to llama.cpp
-            int32_t top_k = s.top_k <= 0 ? 64 : std::min<int32_t>(s.top_k, 64);
+            // Hy4 accepts 0 for the entire vocabulary. The other engines accept 1..64.
+            int32_t top_k = std::max<int32_t>(0, s.top_k);
+            if (!engine_is_hy4) top_k = top_k == 0 ? 64 : std::min<int32_t>(top_k, 64);
             std::snprintf(b, sizeof b, " top_k=%d", top_k); h += b;
             if (s.min_p > 0.0f) { std::snprintf(b, sizeof b, " min_p=%g", (double) s.min_p); h += b; }
             if (s.seed != LLAMA_DEFAULT_SEED) { std::snprintf(b, sizeof b, " seed=%u", s.seed); h += b; }
@@ -380,7 +399,7 @@ struct strata_context_impl {
                           (double) s.penalty_repeat, (double) s.penalty_freq, (double) s.penalty_present);
             h += b;
         }
-        if (!s.logit_bias.empty() && !engine_is_poly) {
+        if (!s.logit_bias.empty() && !engine_is_poly && !engine_is_hy4) {
             std::string lb = " logit_bias=";
             for (size_t i = 0; i < s.logit_bias.size(); ++i) {
                 if (i) lb += ',';
@@ -758,9 +777,12 @@ struct strata_context_impl {
             } else {
                 result.text_to_send = "";
             }
-            if (slot.task->params.stream) {
-                send_partial_response(result, false, false);
-            }
+        } else {
+            // A token can end mid-character. Its ID is ready even while its text is buffered.
+            result.text_to_send.clear();
+        }
+        if (slot.task->params.stream && (!incomplete || slot.task->params.return_tokens)) {
+            send_partial_response(result, false, false);
         }
 
         if (slot.stats.n_gen > 0 && slot.has_next_token && !slot.has_budget()) {
@@ -951,7 +973,7 @@ struct strata_context_impl {
                 {"vocab_type",  llama_vocab_type(vocab)},
                 {"n_vocab",     llama_vocab_n_tokens(vocab)},
                 {"n_ctx",       n_ctx},
-                {"engine",      engine_is_poly ? "strata-poly" : "strata"},
+                {"engine",      engine_name()},
             }},
         };
     }
@@ -1094,6 +1116,9 @@ struct strata_context_impl {
             task.id     = rd.get_new_id();
             task.tokens = std::move(inputs[0]);
             task.params = server_schema::eval_llama_cmpl_schema(vocab, params, logit_bias_eog, data);
+            if (engine_is_hy4 && (!task.params.sampling.logit_bias.empty() || data.value("ignore_eos", false))) {
+                throw std::invalid_argument("Hy4 does not implement logit_bias or ignore_eos");
+            }
             if (task.params.n_cmpl > 1) {
                 throw std::invalid_argument("n > 1 is not supported by this server");
             }
@@ -1111,10 +1136,11 @@ struct strata_context_impl {
             return res;
         }
 
+        const auto should_stop = [this, &req] { return stopping.load() || req.should_stop(); };
         const bool stream = json_value(data, "stream", false);
 
         if (!stream) {
-            auto all_results = rd.wait_for_all(req.should_stop);
+            auto all_results = rd.wait_for_all(should_stop);
             if (all_results.is_terminated) {
                 return res; // connection closed
             } else if (all_results.error) {
@@ -1129,9 +1155,9 @@ struct strata_context_impl {
         }
 
         // streaming: the first error is a plain (non-stream) error response, as OpenAI does
-        auto first_result = rd.next(req.should_stop);
+        auto first_result = rd.next(should_stop);
         if (first_result == nullptr) {
-            GGML_ASSERT(req.should_stop());
+            GGML_ASSERT(should_stop());
             return res;
         }
         if (first_result->is_error()) {
@@ -1155,14 +1181,14 @@ struct strata_context_impl {
         }
         res->status       = 200;
         res->content_type = "text/event-stream";
-        res->set_next([res_this = res.get(), res_type, sse_ping_interval](std::string & output) -> bool {
+        res->set_next([this, res_this = res.get(), res_type, sse_ping_interval](std::string & output) -> bool {
             static auto format_error = [](task_response_type res_type, const json & res_json) {
                 if (res_type == TASK_RESPONSE_TYPE_ANTHROPIC) {
                     return format_anthropic_sse({{"event", "error"}, {"data", res_json}});
                 }
                 return format_oai_sse(json {{ "error", res_json }});
             };
-            auto effective_should_stop = [&res_this]() { return res_this->should_stop(); };
+            auto effective_should_stop = [this, res_this]() { return stopping.load() || res_this->should_stop(); };
 
             try {
                 if (effective_should_stop()) {
@@ -1246,9 +1272,33 @@ bool strata_context::start_engine(const common_params & params, const std::strin
     impl->engine_args = engine_args;
     impl->engine_is_poly = engine_exe.find("strata-poly") != std::string::npos;
 
+    const std::filesystem::path checkpoint(params.model.path);
+    impl->engine_is_hy4 = checkpoint.extension() == ".strata";
     std::vector<std::string> argv;
     argv.push_back(engine_exe);
     argv.push_back("--serve");
+    if (impl->engine_is_hy4) {
+        // The child must execute the same pack whose vocabulary the front end reads.
+        for (size_t i = 0; i < engine_args.size(); ++i) {
+            if ((engine_args[i] == "--model" || engine_args[i] == "--native") &&
+                (i + 1 == engine_args.size() || engine_args[i + 1] != checkpoint)) {
+                err = "for Hy4, -m selects the checkpoint for both the front end and the runner";
+                return false;
+            }
+        }
+#ifndef STRATA_HY4_VOCAB
+        err = "rebuild the front end with libzstd development files to read .strata checkpoints";
+        return false;
+#endif
+        if (!params.mmproj.path.empty()) {
+            err = "Hy4 text serving accepts a text checkpoint and its Engram shard";
+            return false;
+        }
+        argv.insert(argv.end(), {"--model", checkpoint.string()});
+        if (std::find(engine_args.begin(), engine_args.end(), "--engram") == engine_args.end()) {
+            argv.insert(argv.end(), {"--engram", (checkpoint.parent_path() / "Hy4-Flash-Engram-Q8.strata").string()});
+        }
+    }
     for (const auto & a : engine_args) {
         argv.push_back(a);
     }
@@ -1261,13 +1311,33 @@ void strata_context::set_picture_cache(size_t entries, size_t bytes) {
 
 bool strata_context::load(common_params & params, std::string & err) {
     auto & I = *impl;
+    if (I.engine_is_hy4) {
+        auto & defaults = params.default_template_kwargs;
+        if (defaults.count("enable_thinking") && defaults.at("enable_thinking") == "false") {
+            defaults["reasoning_effort"] = json("no_think").dump();
+        } else if (defaults.count("reasoning_effort")) {
+            auto effort = json::parse(defaults.at("reasoning_effort"));
+            if (!effort.is_string()) {
+                err = "Hy4 reasoning_effort must be a string";
+                return false;
+            }
+            defaults["reasoning_effort"] = json(hy4_effort(effort.get<std::string>())).dump();
+        }
+    }
     I.params = params;
 
     // the vocabulary and the chat template, from the GGUF's metadata; no tensor is read
     llama_model_params mparams = llama_model_default_params();
     mparams.vocab_only = true;
-    I.model = llama_model_load_from_file(params.model.path.c_str(), mparams);
-    if (I.model == nullptr) {
+#ifdef STRATA_HY4_VOCAB
+    if (I.engine_is_hy4) {
+        I.model = load_hy4_vocab(params.model.path, mparams, err);
+    } else
+#endif
+    {
+        I.model = llama_model_load_from_file(params.model.path.c_str(), mparams);
+    }
+    if (I.model == nullptr && !I.engine_is_hy4) {
         // An architecture this llama.cpp does not know (GLM 5.3 Flash's file says "glm5-next", from neurall's fork)
         // still has an ordinary vocabulary and chat template; the engine, not llama.cpp, runs the tensors. A
         // vocabulary-only load reads nothing architecture-specific, so the name is overridden to one llama.cpp knows.
@@ -1281,7 +1351,7 @@ bool strata_context::load(common_params & params, std::string & err) {
         I.model = llama_model_load_from_file(params.model.path.c_str(), mparams);
     }
     if (I.model == nullptr) {
-        err = "could not read the vocabulary from " + params.model.path;
+        if (err.empty()) err = "could not read the vocabulary from " + params.model.path;
         return false;
     }
     I.vocab      = llama_model_get_vocab(I.model);
@@ -1362,9 +1432,12 @@ void strata_context::start_loop() {
     impl->queue_tasks.start_loop();
 }
 
-void strata_context::terminate() {
+void strata_context::stop_loop() {
+    impl->stopping.store(true);
     impl->queue_tasks.terminate();
-    impl->queue_results.terminate();
+}
+
+void strata_context::terminate() {
     impl->engine.quit();
     if (impl->model) {
         llama_model_free(impl->model);
@@ -1429,7 +1502,7 @@ void strata_context::init_routes(server_http_context & http) {
             {"chat_template", common_chat_templates_source(I->chat_params.tmpls.get())},
             {"chat_template_caps", caps},
             {"build_info", std::string(llama_build_info())},
-            {"engine", I->engine_is_poly ? "strata-poly" : "strata"},
+            {"engine", I->engine_name()},
         });
         return res;
     };
@@ -1437,6 +1510,15 @@ void strata_context::init_routes(server_http_context & http) {
     // a control token's text inside a message stays text (literals.hpp): marked before the template renders,
     // unmarked after, and the spans it covered are tokenized as text
     auto parse_chat = [I](json & body, std::vector<raw_buffer> & files, std::vector<std::pair<size_t, size_t>> & plain) {
+        if (I->engine_is_hy4) {
+            auto kwargs = body.value("chat_template_kwargs", json::object());
+            std::string effort = json_value(body, "reasoning_effort", json_value(kwargs, "reasoning_effort", std::string()));
+            if (!kwargs.value("enable_thinking", true)) effort = "no_think";
+            if (!effort.empty()) {
+                body["reasoning_effort"] = hy4_effort(effort);
+                body["chat_template_kwargs"]["enable_thinking"] = body["reasoning_effort"] != "no_think";
+            }
+        }
         bool marked = false;
         if (body.contains("messages")) {
             json * tools = body.contains("tools") ? &body.at("tools") : nullptr;

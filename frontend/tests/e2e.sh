@@ -98,7 +98,7 @@ rm -f "$IMG"
 # The vocabulary-only GGUF's template has neither tools nor reasoning, so this runs a third server with upstream's
 # Qwen3 template (frontend/tests/data/qwen3-chat-template.jinja: tools through tojson, <think> blocks).
 TPL_PORT=$((PORT + 2)); TPL_URL=http://127.0.0.1:$TPL_PORT; TPL_LOG=$(mktemp "${TMPDIR:-/tmp}/us2-e2e-tpl-XXXXXX")
-"$BIN" --engine "$HERE/fake-engine.py" -m "$MODEL" --jinja --chat-template-file "$HERE/data/qwen3-chat-template.jinja" --host 127.0.0.1 --port "$TPL_PORT" --alias fake -- --max-context 4096 > "$TPL_LOG" 2>&1 &
+FAKE_TOKENS=9707,220,126190,230,1879 "$BIN" --engine "$HERE/fake-engine.py" -m "$MODEL" --jinja --chat-template-file "$HERE/data/qwen3-chat-template.jinja" --host 127.0.0.1 --port "$TPL_PORT" --alias fake -- --max-context 4096 > "$TPL_LOG" 2>&1 &
 TPL_PID=$!
 trap 'kill $PID $SLOW_PID $TPL_PID 2>/dev/null; wait $PID $SLOW_PID $TPL_PID 2>/dev/null; rm -f "$LOG" "$SLOW_LOG" "$TPL_LOG" "$BIG"' EXIT
 for i in $(seq 1 100); do
@@ -171,10 +171,40 @@ echo "$lit" | sed 's/^/     /'
 check $rc "control-token texts inside messages are text (literals)"
 check $(grep -q "control-token texts inside the messages are sent as text" "$TPL_LOG" && echo 0 || echo 1) "server logged the literals"
 
+# The fake reply contains a four-byte character split across two vocabulary tokens.
+python3 - "$TPL_URL" <<'PYTEST'
+import json, sys, urllib.request
+payload = {"prompt": [9707], "n_predict": 5, "return_tokens": True, "stream": True}
+req = urllib.request.Request(sys.argv[1] + "/completion", json.dumps(payload).encode(),
+                             {"Content-Type": "application/json"})
+with urllib.request.urlopen(req, timeout=20) as stream:
+    events = [json.loads(line[6:]) for line in stream if line.startswith(b"data: {")]
+assert [tok for event in events for tok in event.get("tokens", [])] == [9707, 220, 126190, 230, 1879]
+assert "".join(event.get("content", "") for event in events) == "Hello 𐍈 world"
+PYTEST
+check $? "stream preserves split UTF-8 token IDs and assembled text"
+
 # tokenize / detokenize round trip
 t=$(curl -s "$URL/tokenize" -H 'content-type: application/json' -d '{"content":"Hello, world!"}' | j 'd["tokens"]')
 d=$(curl -s "$URL/detokenize" -H 'content-type: application/json' -d "{\"tokens\":$t}" | j 'd["content"]')
 check $([ "$d" = "Hello, world!" ] && echo 0 || echo 1) "tokenize/detokenize round trip: $t"
+
+# All readers and the engine must be released once on an orderly shutdown.
+curl -s --max-time 15 "$SLOW_URL/completion" -H 'content-type: application/json' \
+    -d '{"prompt":"pending","n_predict":4000}' >/dev/null &
+pending_client=$!
+for i in $(seq 1 50); do
+    if curl -s "$SLOW_URL/health" | grep -q '"busy":true'; then break; fi
+    sleep 0.1
+done
+check $(curl -s "$SLOW_URL/health" | grep -q '"busy":true' && echo 0 || echo 1) "a completion is active during shutdown"
+kill "$PID" "$SLOW_PID" "$TPL_PID"
+wait "$pending_client" || true
+for server_pid in "$PID" "$SLOW_PID" "$TPL_PID"; do
+    wait "$server_pid"
+    check $? "server $server_pid exits cleanly on SIGTERM"
+done
+trap 'rm -f "$LOG" "$SLOW_LOG" "$TPL_LOG" "$BIG"' EXIT
 
 if [ $fail = 0 ]; then echo "e2e: all checks passed"; else echo "--- server log"; tail -40 "$LOG"; echo "--- slow server log"; tail -20 "$SLOW_LOG"; echo "--- template server log"; tail -20 "$TPL_LOG"; fi
 exit $fail

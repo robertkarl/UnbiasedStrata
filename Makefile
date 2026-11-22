@@ -74,11 +74,29 @@ frontend:
 # backpressure, child exit, ERR) and the HTTP surface a coding agent touches (frontend/tests/e2e.sh).  Needs python3
 # and curl; no GPU and no model.  Runs in the CUDA-free build directory, so it works on the build box and on a laptop.
 test: frontend
-	cmake --build $(BUILD_DIR)-frontend -j $(JOBS) --target engine_test literals_test picture_cache_test
+	cmake --build $(BUILD_DIR)-frontend -j $(JOBS) --target engine_test literals_test picture_cache_test hy4_sampling_test
 	$(BUILD_DIR)-frontend/bin/engine_test frontend/tests/fake-engine.py
+	$(BUILD_DIR)-frontend/bin/hy4_sampling_test
 	$(BUILD_DIR)-frontend/bin/literals_test
 	$(BUILD_DIR)-frontend/bin/picture_cache_test
 	frontend/tests/e2e.sh $(BUILD_DIR)-frontend/bin/unbiased-strata
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+# Native Hy4 runner plus the existing HTTP front end. Hy4 CUDA kernels need sm_70+.
+HY4_DIR = $(BUILD_DIR)-hy4
+HY4_CUDA_ARCHS = $(shell echo '$(CUDA_ARCHS)' | tr ';' '\n' | awk 'int($$0) >= 70' | paste -sd ';' -)
+.PHONY: hy4 hy4-engine
+hy4: frontend hy4-engine
+
+hy4-engine:
+ifeq ($(shell uname -s),Darwin)
+	cmake -S src/hy4flash -B $(HY4_DIR) -DCMAKE_BUILD_TYPE=Release -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$(abspath $(HY4_DIR))/bin
+else
+	@test -n "$(NVCC)" || { echo "Hy4 needs nvcc on Linux (set NVCC=/path/to/nvcc)"; exit 1; }
+	@test -n "$(HY4_CUDA_ARCHS)" || { echo "Hy4 requires CUDA_ARCHS of 70 or newer"; exit 1; }
+	cmake -S src/hy4flash -B $(HY4_DIR) -DCMAKE_BUILD_TYPE=Release -DCMAKE_RUNTIME_OUTPUT_DIRECTORY=$(abspath $(HY4_DIR))/bin \
+	      $(COMPILER_FLAGS) -DCMAKE_CUDA_COMPILER=$(NVCC) "-DCMAKE_CUDA_ARCHITECTURES=$(HY4_CUDA_ARCHS)"
+endif
+	cmake --build $(HY4_DIR) -j $(JOBS) --target strata-hy4

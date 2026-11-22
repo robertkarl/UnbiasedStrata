@@ -133,6 +133,10 @@ build/bin/unbiased-strata --engine build/bin/strata \
 ```
 
 
+**Tencent Hy4-Flash** uses Strata’s native SQ checkpoints and the shared Engram shard.
+Build the CUDA or Apple Silicon Metal runner with `make hy4`. The front end reads the vocabulary
+and chat template from the text checkpoint. [Build, serving and oracle comparison](docs/HY4.md).
+
 **DeepSeek-V4.1-Flash-1017, ISTA-DASLab IQ2_XXS** (`strata-dsv41`, Strata v0.2.4's third engine; the four shards,
 the shared Engram file, Unsloth's DSpark drafter and a pack directory made from them): [docs/DEEPSEEK41.md](docs/DEEPSEEK41.md).
 

@@ -2282,6 +2282,14 @@ if(STRATA_FRONTEND AND STRATA_NATIVE_EXPERTS)
   target_include_directories(unbiased-strata PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/frontend)
   target_link_libraries(unbiased-strata PRIVATE strata_llama_server)
   target_compile_features(unbiased-strata PRIVATE cxx_std_20)
+  find_path(ZSTD_INCLUDE_DIR zstd.h)
+  find_library(ZSTD_LIBRARY zstd)
+  if(ZSTD_INCLUDE_DIR AND ZSTD_LIBRARY)
+    target_sources(unbiased-strata PRIVATE frontend/hy4_vocab.cpp src/artifact/strata_reader.cpp)
+    target_include_directories(unbiased-strata PRIVATE include ${ZSTD_INCLUDE_DIR})
+    target_link_libraries(unbiased-strata PRIVATE ${ZSTD_LIBRARY})
+    target_compile_definitions(unbiased-strata PRIVATE STRATA_HY4_VOCAB)
+  endif()
 
   # The engine adapter against the fake engine (frontend/tests/fake-engine.py): no GPU, no model, no llama.cpp.
   # `make test` builds and runs it, then frontend/tests/e2e.sh against the binary above.
@@ -2291,6 +2299,8 @@ if(STRATA_FRONTEND AND STRATA_NATIVE_EXPERTS)
 
   # The literal marking (frontend/literals.hpp) over llama.cpp's vendored nlohmann json, which has the same interface
   # as common_json: no model, no llama.cpp library.
+  add_executable(hy4_sampling_test EXCLUDE_FROM_ALL frontend/tests/hy4_sampling_test.cpp)
+  target_compile_features(hy4_sampling_test PRIVATE cxx_std_17)
   add_executable(literals_test EXCLUDE_FROM_ALL frontend/tests/literals_test.cpp)
   target_include_directories(literals_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/frontend ${STRATA_GGML_DIR}/vendor)
   target_compile_features(literals_test PRIVATE cxx_std_20)
