@@ -24,3 +24,20 @@ The model packs and Q8 Engram file are archived and checksum-verified on the SMB
 ## SQ-64 search order
 
 First test the dual-GPU layout with each card as primary and Strata's automatic prefill chunk size. Then test explicit 1,024- and 2,048-token chunks and each card alone. A 128-token warm-up precedes the 256-token screening request. A configuration clearing both speed floors gets a new engine process, a warm-up and three long requests. The initial search uses sampled generation. Greedy generation is recorded as its own configuration if needed. Data are retained for failed trials and slower configurations.
+
+The SQ-128 upstream runs use the native `--serve` protocol, one fresh process per placement, with `--ctx 131072 --chunk 1024 --draft dfly2 --session-reuse 1`. Each first request submits 4,750 IDs and requests 2,048 new tokens at temperature 0.9, top-p 1 and top-k 64. `CUDA_VISIBLE_DEVICES` restricts the process to the intended UUIDs. The recorded GPU process list verifies placement. The release recommends NVIDIA driver 575.51 or newer in its component manifest; this host runs 550.163.01. No driver was changed for this test.
+
+## Reproduction
+
+The SQ-64 experiments use Python 3 and Hugging Face Tokenizers. Export the embedded tokenizer once, then run the same binary in `measure.py`. Obtain the ordered physical GPU UUIDs from `nvidia-smi -L`.
+
+```sh
+strata-hy4 --export-tokenizer /models/Hy4-Flash-SQ-64.strata ./tokenizer
+python3 bench/hy4-performance/measure.py \
+    --engine /path/to/published/strata-hy4 \
+    --model /models/Hy4-Flash-SQ-64.strata \
+    --engram /models/Hy4-Flash-Engram-Q8.strata \
+    --tokenizer ./tokenizer/tokenizer.hf.json --gpus "$GPU_UUIDS" \
+    --context 4096 --prompt 2048 --generate 2048 --trials 3 \
+    --out ./hy4-result
+```
