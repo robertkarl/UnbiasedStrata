@@ -90,7 +90,7 @@ make build CUDA_ARCHS=89                                        # 6m40 on 16 cor
 ## Run
 
 ```
-unbiased-strata --engine <strata|strata-poly|strata-dsv41|path> -m <model.gguf> [llama-server options] -- <engine options>
+unbiased-strata --engine <strata|strata-poly|strata-dsv41|strata-ik2|path> -m <model.gguf> [llama-server options] -- <engine options>
 ```
 
 `-m` names the GGUF the vocabulary and chat template are read from; no tensors are loaded from it by the front end.
@@ -136,6 +136,42 @@ build/bin/unbiased-strata --engine build/bin/strata \
 **Tencent Hy4-Flash** uses Strata’s native SQ checkpoints and the shared Engram shard.
 Build the CUDA or Apple Silicon Metal runner with `make hy4`. The front end reads the vocabulary
 and chat template from the text checkpoint. [Build, serving and oracle comparison](docs/HY4.md).
+
+**Inkling 2 Mini** runs with Project Maya’s CUDA engine on Linux x86-64 (Ampere or newer) and Strata’s native Metal engine on Apple Silicon.
+
+On a Mac, put the SQ pack and its matching `tokenizer.json` in the same directory. The pack contains the chat template. The Metal engine can use the pack’s built-in DSpark drafter.
+
+```bash
+make inkling
+PACK=/models/Inkling-2-Mini-SQ-20.strata
+build-frontend/bin/unbiased-strata --engine strata-inkling -m "$PACK" --alias inkling-2-mini --port 8080 \
+  -- --native "$PACK" --max-context 32768 --parallel 1 --draft auto
+```
+
+[Inkling SQ packs and tokenizer](https://huggingface.co/strata-engine/Inkling-2-Mini-Strata/tree/04996a1e2c45009b6a04f2af126cb6bdb2ba3587)
+
+For an RTX 3090 or 3090 Ti (24 GB), build for compute capability 8.6 and point both processes at the same Unsloth GGUF.
+
+```bash
+make inkling CUDA_ARCHS=86
+MODEL=/models/Inkling-2-Mini-UD-Q4_K_XL.gguf
+IK2_KV=fp8 IK2_GATE_BF16=1 IK2_GATE_TILE=64 IK2_Q8_UNROLL=1 IK2_BATCH_PREFILL=1 \
+  build/bin/unbiased-strata --engine strata-ik2 -m "$MODEL" --alias inkling-2-mini --port 8080 \
+  -- --model "$MODEL" --max-context 32768
+```
+
+For image input, add `--mmproj /models/mmproj-BF16.gguf` before the `--` separator and send an
+OpenAI `image_url` content part alongside the text in `/v1/chat/completions`. The front end encodes images on the CPU by default. On Apple Silicon, add `--mmproj-gpu` to encode them on Metal.
+Set `"reasoning_effort":"none"` for a direct answer or choose a level
+such as `"medium"` to receive `reasoning_content`. Streaming and function calls use the same endpoint.
+For CUDA speculative decoding, append `--draft /models/mtp.safetensors` after the engine options, using the drafter
+from Thinking Machines' Inkling-2-Mini checkpoint.
+To check tokenization, streamed responses, and tool-call round trips on a machine without CUDA, run
+`make frontend` and `python3 frontend/tests/inkling_chat.py build-frontend/bin/unbiased-strata "$MODEL"`. Add the projector path as the last argument to test image input.
+Inkling sampling supports temperature, top-p, min-p and a seed. Top-k defaults to the server setting. A value of zero uses the full candidate buffer (1,000 on CUDA and 128 on Metal). The HTTP API rejects logit bias and ignore-EOS on both backends. Repetition, frequency and presence penalties are available on Metal.
+
+[A6000 and Debra correctness and performance measurements](bench/inkling/README.md) ·
+[Engine source and model configuration](https://github.com/alesha-pro/maya-inkling-mini/blob/e819852f822479af783638a467bfdfe2ed6882ec/docs/INKLING2-MINI.md)
 
 **DeepSeek-V4.1-Flash-1017, ISTA-DASLab IQ2_XXS** (`strata-dsv41`, Strata v0.2.4's third engine; the four shards,
 the shared Engram file, Unsloth's DSpark drafter and a pack directory made from them): [docs/DEEPSEEK41.md](docs/DEEPSEEK41.md).

@@ -1,0 +1,14 @@
+--- a/src/ik2/ik2_main.cu
++++ b/src/ik2/ik2_main.cu
+@@ -5744,6 +5744,11 @@
+         }
+         return 0;
+     }
++    if (const char *path = getenv("IK2_EVAL_PICTURES")) {
++        std::vector<uint64_t> sig(prompt.size());
++        const auto err = load_pictures(path, prompt, image_token, c.C, g_img, sig);
++        if (!err.empty()) die(err);
++    }
+     if ((int) prompt.size() + gen > ctx) die("prompt + gen past --ctx");
+     // the prompt
+     std::vector<float> logits;

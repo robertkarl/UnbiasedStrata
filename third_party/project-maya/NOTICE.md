@@ -13,3 +13,9 @@ Changes made while porting into Strata are listed in the git history of the `src
 Later changes taken from Project Maya releases v1.1.18 to v1.1.26 (the same approach re-written onto Strata's engine,
 for example the long-prompt layer skip, the thinking budget, conversation slots) are covered by the same copyright
 and permission notice, in `LICENSE` beside this file.
+
+## Inkling 2
+
+The engine in `src/ik2/` and the kernel parity test in `tests/ik2_kernels_test.cu` are adapted from
+[alesha-pro/maya-inkling-mini at e819852f](https://github.com/alesha-pro/maya-inkling-mini/tree/e819852f822479af783638a467bfdfe2ed6882ec).
+The same Project Maya MIT license applies. Strata supplies the CMake target, GGUF shard resolution, and server integration.
